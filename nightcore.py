@@ -11,17 +11,20 @@ def parse_arguments():
         description="Change audio speed using ffmpeg",
         formatter_class=argparse.RawTextHelpFormatter
     )
+
     parser.add_argument(
         "input",
         type=str,
         help="Input audio file"
     )
+
     parser.add_argument(
         "-s", "--speed",
         type=float,
         default=1.0,
         help="Speed (e.g. 1.2 = 20%% faster, 0.8 = 20%% slower)"
     )
+
     parser.add_argument(
         "-r", "--reciprocal",
         action="store_true",
@@ -63,20 +66,46 @@ def get_sample_rate(input_path):
         print("Error: ffprobe not found. Is ffmpeg installed?")
         return None
 
+def get_title(input_path, fallback):
+    try:
+        ffprobe_cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format_tags=title",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(input_path)
+        ]
+
+        result = subprocess.run(
+            ffprobe_cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        title = result.stdout.strip()
+
+        return title if title else fallback
+
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return fallback
+
 def main():
     args = parse_arguments()
-
     input_path = Path(args.input)
+
     if not input_path.is_file():
         print(f"Error: File not found: {input_path}", file=sys.stderr)
         return 1
 
     speed = args.speed
+
     if speed <= 0:
         print("Error: Speed factor must be > 0", file=sys.stderr)
         return 1
 
     reciprocal = args.reciprocal
+
     if reciprocal:
         speed = 1 / speed
 
@@ -86,10 +115,14 @@ def main():
     speed_str = f"{1 / speed}" if reciprocal else f"{speed}"
     output_path = Path.cwd() / (stem + suffix + ".flac")
 
+    original_title = get_title(input_path, fallback=stem)
+    new_title = original_title + suffix
+
     ffmpeg_cmd = [
         "ffmpeg",
         "-i", str(input_path),
         "-af", f"asetrate={speed}*{sample_rate}",
+        "-metadata", f"title={new_title}",
         str(output_path)
     ]
 
