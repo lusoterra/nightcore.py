@@ -12,7 +12,7 @@ ZSHCOMP = completions/_nightcore
 all: check
 
 check:
-	python3 -m py_compile $(SRC)
+	python3 -c "compile(open('$(SRC)').read(), '$(SRC)', 'exec')"
 
 install: check
 	install -Dm755 $(SRC) $(DESTDIR)$(BINDIR)/$(BIN)
