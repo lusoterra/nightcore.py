@@ -17,6 +17,11 @@ _nightcore() {
         '--both[With resampling, generate both the weird-rate and standard-rate files]' \
         '-F+[Lossless output format]:format:(flac alac wav)' \
         '--format+[Lossless output format]:format:(flac alac wav)' \
+        '-p[Pitch-shift only (duration preserved) instead of speeding up]' \
+        '--pitch[Pitch-shift only (duration preserved) instead of speeding up]' \
+        '-S+[Shift amount in semitones]:semitones:(1.65 2.41 3.16 3.86 4.55)' \
+        '--semitones+[Shift amount in semitones]:semitones:(1.65 2.41 3.16 3.86 4.55)' \
+        '--pitch-diff+[Pitch difference between two frequencies]: :'
         '-y[Overwrite output file if it exists]' \
         '--overwrite[Overwrite output file if it exists]' \
         '-h[Show help]' \
