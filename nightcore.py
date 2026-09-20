@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 # Codecs reported by ffprobe (stream codec_name, lowercased) that are
 # lossy. Anything not in here is treated as lossless (no tag needed).
@@ -106,22 +107,11 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--target-rate",
-        type=int,
-        default=None,
-        metavar="HZ",
-        help=(
-            "Explicit resample target in Hz (implies resampling).\n"
-            "Overrides --resample auto-selection."
-        )
-    )
-
-    parser.add_argument(
         "-B", "--both",
         action="store_true",
         default=False,
         help=(
-            "With -R/--resample or --target-rate, generate both files:\n"
+            "With -R/--resample, generate both files:\n"
             "the non-standard-rate file and the standard-rate file."
         )
     )
@@ -155,20 +145,43 @@ def parse_arguments():
         default=None,
         metavar="ST",
         help=(
-            "Shift amount in semitones instead of -s/--speed\n"
-            "(speed = 2^(ST/12); e.g. 3.16 ~= 1.2x)."
+            "Pitch-shift by ST semitones (implies pitch-only mode,\n"
+            "same as giving the equivalent -s with -p; e.g. 3.16 ~= 1.2x)."
+        )
+    )
+
+    parser.add_argument(
+        "-n", "--dry-run",
+        action="store_true",
+        default=False,
+        help=(
+            "Print the output filename(s) that would be generated\n"
+            "and exit without converting anything (for bulk renaming;\n"
+            "pair with puddletag to rewrite tags from filenames)."
         )
     )
 
     parser.add_argument(
         "--pitch-diff",
         type=float,
-        nargs=2,
+        nargs="+",
         default=None,
-        metavar=("F1", "F2"),
+        metavar="F",
         help=(
-            "Print the pitch difference between two peak frequencies\n"
-            "(F1 = original, F2 = pitched: semitones, cents, speed) and exit."
+            "Pitch difference calculator (prints semitones, cents, speed).\n"
+            "One value = speed factor (e.g. 1.36); two values = peak\n"
+            "frequencies F1 original, F2 pitched. Exits without converting."
+        )
+    )
+
+    parser.add_argument(
+        "--speed-diff",
+        type=float,
+        default=None,
+        metavar="ST",
+        help=(
+            "Reverse calculator: semitones ST to speed factor and cents.\n"
+            "Exits without converting."
         )
     )
 
@@ -446,12 +459,35 @@ def lossy_suffix_for(codec, bit_rate, mode=None, encoder=None):
     if mode:
         parts.append(mode)
     if bit_rate is not None:
-        kbps = int(round(bit_rate / 1000))
+        kbps = round(bit_rate / 1000)
         if kbps > 0:
             parts.append(f"{kbps}k")
     if encoder:
         parts.append(encoder)
     return " [" + " ".join(parts) + "]"
+
+
+def read_tags(input_path, *names):
+    """Present format tags as {lowercased-name: stripped value}, one probe."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", f"format_tags={','.join(names)}",
+                "-of", "json",
+                str(input_path),
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        tags = json.loads(result.stdout or "{}").get("format", {}).get("tags") or {}
+        return {
+            str(k).lower(): str(v).strip()
+            for k, v in tags.items()
+            if str(v).strip()
+        }
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        return {}
 
 
 def read_format_tag(input_path, tag):
@@ -535,13 +571,90 @@ def missing_tools(*names):
     return [n for n in names if shutil.which(n) is None]
 
 
+_qaac_version = None
+
+
+def sample_is_float(path):
+    """True if audio decodes as float (or the probe fails: convert anyway)."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=sample_fmt",
+                "-of", "default=nw=1:nk=1",
+                str(path),
+            ],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return True
+    fmt = (result.stdout or "").strip().lower()
+    return not fmt or fmt.startswith(("flt", "dbl"))
+
+
+def find_qaac():
+    """Verify a genuine qaac binary is usable; return its version line or None.
+
+    Checks PATH plus `qaac --check` output for the qaac/CoreAudioToolbox
+    markers, so unrelated same-named executables don't qualify. Result is
+    cached for the run (wine startup isn't free).
+    """
+    global _qaac_version
+    if _qaac_version is False:
+        return None
+    if _qaac_version is not None:
+        return _qaac_version
+    _qaac_version = False
+    if shutil.which("qaac") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["qaac", "--check"],
+            capture_output=True, text=True, check=False, timeout=180,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    output = (result.stdout or "") + (result.stderr or "")
+    first_line = output.strip().splitlines()[0] if output.strip() else ""
+    if result.returncode == 0 and first_line.startswith("qaac ") \
+            and "CoreAudioToolbox" in output:
+        _qaac_version = first_line
+        return _qaac_version
+    return None
+
+
+def run_qaac_alac(input_wav, output_m4a, tags, overwrite):
+    """Encode ALAC with qaac (CoreAudio); raises CalledProcessError on failure.
+
+    input_wav must be integer PCM (qaac rejects float). tags maps
+    title/artist/album/genre/date/track; missing/empty values are skipped.
+    Our own -n/-y preflight already ran, and qaac overwrites silently.
+    """
+    del overwrite  # handled by our preflight; qaac overwrites regardless
+    cmd = ["qaac", "--silent", "--alac", "--rate", "keep"]
+    for flag, key in (("--title", "title"), ("--artist", "artist"),
+                      ("--album", "album"), ("--genre", "genre"),
+                      ("--date", "date")):
+        if tags.get(key):
+            cmd += [flag, tags[key]]
+    track = tags.get("track")
+    if track and re.fullmatch(r"\d+(/\d+)?", track):
+        cmd += ["--track", track]
+    cmd += ["-o", str(output_m4a), str(input_wav)]
+    subprocess.run(cmd, check=True)
+
+
 def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
-               metadata_from=None):
+               metadata_from=None, sample_fmt=None):
     """Run one ffmpeg transcode; raises CalledProcessError on failure.
 
     metadata_from: optional extra input whose global metadata is mapped
     to the output (used to restore tags lost by intermediate sox steps);
     the explicit title always wins. Audio is always taken from input_path.
+    sample_fmt: optional forced output depth (s16/s24/s32); None leaves
+    the encoder's default negotiation (used for lossless temps/sources).
     """
     ffmpeg_cmd = [
         "ffmpeg",
@@ -553,6 +666,8 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
         ffmpeg_cmd += ["-i", str(metadata_from), "-map", "0:a", "-map_metadata", "1"]
     if audio_filter is not None:
         ffmpeg_cmd += ["-af", audio_filter]
+    if sample_fmt is not None:
+        ffmpeg_cmd += ["-sample_fmt", sample_fmt]
     ffmpeg_cmd += [
         "-c:a", codec,
         "-metadata", f"title={title}",
@@ -565,12 +680,37 @@ def main():
     args = parse_arguments()
 
     if args.pitch_diff is not None:
-        f1, f2 = args.pitch_diff
-        if f1 <= 0 or f2 <= 0:
-            print("Error: --pitch-diff frequencies must be > 0", file=sys.stderr)
+        vals = args.pitch_diff
+        if len(vals) == 1:
+            (factor,) = vals
+            if factor <= 0 or not math.isfinite(factor):
+                print("Error: --pitch-diff speed factor must be finite and > 0",
+                      file=sys.stderr)
+                return 1
+            st = 12.0 * math.log2(factor)
+            print(f"speed {factor:g}x = {st!r}st ({st * 100!r} cents)")
+        elif len(vals) == 2:
+            f1, f2 = vals
+            if (f1 <= 0 or f2 <= 0
+                    or not math.isfinite(f1) or not math.isfinite(f2)):
+                print("Error: --pitch-diff frequencies must be finite and > 0",
+                      file=sys.stderr)
+                return 1
+            st = 12.0 * math.log2(f2 / f1)
+            print(f"{f2:g} Hz vs {f1:g} Hz: {st!r}st ({st * 100!r} cents), "
+                  f"speed {f2 / f1!r}x")
+        else:
+            print("Error: --pitch-diff takes one speed factor or two frequencies",
+                  file=sys.stderr)
             return 1
-        st = 12.0 * math.log2(f2 / f1)
-        print(f"{f2:g} Hz vs {f1:g} Hz: {st:.2f}st ({st * 100:.2f} cents), speed {f2 / f1:.4g}x")
+        return 0
+
+    if args.speed_diff is not None:
+        st = args.speed_diff
+        if not math.isfinite(st):
+            print("Error: --speed-diff semitones must be finite", file=sys.stderr)
+            return 1
+        print(f"{st!r}st ({st * 100!r} cents) = speed {speed_from_semitones(st)!r}x")
         return 0
 
     if not args.input:
@@ -601,19 +741,15 @@ def main():
     else:
         speed = args.speed
 
-    if speed <= 0:
-        print("Error: Speed factor must be > 0", file=sys.stderr)
+    if speed <= 0 or not math.isfinite(speed):
+        print("Error: Speed factor must be a finite number > 0", file=sys.stderr)
         return 1
 
     if args.reciprocal:
         speed = 1 / speed
 
-    if args.target_rate is not None and args.target_rate <= 0:
-        print("Error: --target-rate must be > 0", file=sys.stderr)
-        return 1
-
-    if args.both and args.target_rate is None and not args.resample:
-        print("Error: --both requires -R/--resample or --target-rate", file=sys.stderr)
+    if args.both and not args.resample:
+        print("Error: --both requires -R/--resample", file=sys.stderr)
         return 1
 
     sample_rate = get_sample_rate(input_path)
@@ -623,9 +759,7 @@ def main():
 
     # Decide resample target. Default: no resampling (bit-perfect weird rate).
     target_rate = None
-    if args.target_rate is not None:
-        target_rate = args.target_rate
-    elif args.resample:
+    if args.resample:
         effective_rate = sample_rate * speed
         target_rate = next_standard_rate(effective_rate)
         if target_rate is None:
@@ -634,7 +768,7 @@ def main():
                 f"highest known standard rate; keeping weird rate.",
                 file=sys.stderr,
             )
-        elif target_rate == int(round(effective_rate)):
+        elif target_rate == round(effective_rate):
             # Already a standard rate: resampling would be a no-op.
             target_rate = None
 
@@ -658,7 +792,19 @@ def main():
     # Vorbis is variable by design and AAC exposes no reliable in-band
     # mode signal, so neither gets a VBR/CBR label.
     lossy_suffix = lossy_suffix_for(codec, bit_rate, mode, encoder)
-    if args.pitch and speed != 1.0:
+    if lossy_suffix:
+        # e.g. [mp3 CBR 320k LAME3.100]: documents a lossy origin.
+        middle_suffix = lossy_suffix
+    elif bits:
+        # e.g. [24bit 44.1kHz]: documents lossless source depth/rate,
+        # which is what you need to revert to original speed.
+        middle_suffix = f" [{bits}bit {format_rate(sample_rate)}]"
+    else:
+        # Float/unknown depth (e.g. 32-bit float masters): rate only.
+        middle_suffix = f" [{format_rate(sample_rate)}]"
+    # -S/--semitones implies pitch-only; -p is the -s spelling of the same.
+    pitch_mode = (args.pitch or args.semitones is not None) and speed != 1.0
+    if pitch_mode:
         # In pitch mode the label is semitones: -s 1.2 -> 3.16st.
         # With --semitones the input value is reused (negated by -r).
         if args.semitones is not None:
@@ -669,20 +815,24 @@ def main():
     else:
         mode_suffix = "" if speed == 1.0 else f" [{speed:g}x]"
     rate_suffix = f" [{format_rate(target_rate)}]" if target_rate is not None else ""
-    weird_suffix = mode_suffix + lossy_suffix
+    weird_suffix = mode_suffix + middle_suffix
     standard_suffix = weird_suffix + rate_suffix
 
     out_ext = OUTPUT_FORMATS[args.format]["ext"]
     out_codec = OUTPUT_FORMATS[args.format]["codec"] or wav_codec_for(bits)
+    # Collapse sub-16-bit/unknown (lossy, float) sources to 16-bit output:
+    # an MP3 carries no more real detail, and float temps would otherwise
+    # bloat finals to 32-bit. Genuine 24/32-bit sources keep their depth.
+    depth_fmt = None if (bits is not None and bits > 16) else "s16"
+    depth_pcm = wav_codec_for(bits)
 
-    if not weird_suffix and not rate_suffix:
-        if input_path.suffix.lower() == out_ext:
-            print(
-                "Error: nothing to do (speed is 1 and no resampling requested)",
-                file=sys.stderr,
-            )
-            return 1
-        # e.g. wav -> flac with speed 1: still convert to target format.
+    if not weird_suffix and not rate_suffix and input_path.suffix.lower() == out_ext:
+        print(
+            "Error: nothing to do (speed is 1 and no resampling requested)",
+            file=sys.stderr,
+        )
+        return 1
+    # e.g. wav -> flac with speed 1: still convert to target format.
 
     if args.both and target_rate is None:
         # Requested both outputs but resampling is a no-op (already a
@@ -697,11 +847,10 @@ def main():
     original_title = get_title(input_path, fallback=stem)
     artist = get_artist(input_path)
 
-    def build_filter(target):
-        if target is not None:
-            if speed == 1.0:
-                return f"aresample={target}"
-            return f"asetrate={sample_rate}*{speed},aresample={target}"
+    def weird_filter():
+        # Speedup is a pure rate reinterpretation: no resampling, ever.
+        # (Resampling happens exclusively in SoX, only for -R outputs
+        # and the pitch-subrecipe rate step.)
         if speed == 1.0:
             # Pure container/codec conversion (e.g. mp3 -> flac): no filter.
             return None
@@ -713,8 +862,9 @@ def main():
     #   ("resample", prefilter, target)        - ffmpeg -> sox rate -> ffmpeg
     #   ("pitch", pitched_rate, cents, target) - ffmpeg -> sox rate+pitch -> ffmpeg
     # Temp WAVs are f32 (exact for <=24-bit int and float32 sources).
-    if args.pitch and speed != 1.0:
-        pitched_rate = int(round(sample_rate * speed))
+    jobs: list[tuple[str, Any]]
+    if pitch_mode:
+        pitched_rate = round(sample_rate * speed)
         cents = semitones_from_speed(speed) * 100.0
         if args.both and target_rate is not None:
             jobs = [
@@ -727,18 +877,20 @@ def main():
             jobs = [(weird_suffix, ("pitch", pitched_rate, cents, None))]
     elif args.both and target_rate is not None:
         jobs = [
-            (weird_suffix, ("direct", build_filter(None))),
+            (weird_suffix, ("direct", weird_filter())),
             # Prefilter is speedup-only: SoX alone performs the resampling.
-            (standard_suffix, ("resample", build_filter(None), target_rate)),
+            (standard_suffix, ("resample", weird_filter(), target_rate)),
         ]
     elif target_rate is not None:
-        jobs = [(standard_suffix, ("resample", build_filter(None), target_rate))]
+        jobs = [(standard_suffix, ("resample", weird_filter(), target_rate))]
     else:
-        jobs = [(weird_suffix, ("direct", build_filter(None)))]
+        jobs = [(weird_suffix, ("direct", weird_filter()))]
 
-    if any(plan[0] != "direct" for _, plan in jobs) and shutil.which("sox") is None:
+    if (not args.dry_run
+            and any(plan[0] != "direct" for _, plan in jobs)
+            and shutil.which("sox") is None):
         print(
-            "Error: 'sox' not found. --pitch and resampling (-R/--target-rate)\n"
+            "Error: 'sox' not found. --pitch and resampling (-R)\n"
             "require SoX installed (apt/pacman/brew install sox).",
             file=sys.stderr,
         )
@@ -763,6 +915,11 @@ def main():
             print("Error: output would overwrite input, aborting", file=sys.stderr)
             return 1
 
+    if args.dry_run:
+        for _, output_path in outputs:
+            print(output_path)
+        return 0
+
     for suffix, output_path in outputs:
         if output_path.exists() and not args.overwrite:
             print(
@@ -773,8 +930,38 @@ def main():
 
     try:
         total = len(jobs)
+        # qaac (CoreAudio, often run via wine) encodes ALAC when present;
+        # otherwise ffmpeg's alac encoder is used. qaac needs integer PCM.
+        qaac_version = find_qaac() if args.format == "alac" else None
+        use_qaac = qaac_version is not None
+        if args.format == "alac":
+            if use_qaac:
+                print(f"Encoding ALAC with {qaac_version}", file=sys.stderr)
+            else:
+                print("Note: qaac not found, encoding ALAC with ffmpeg",
+                      file=sys.stderr)
+        int_temp_codec = depth_pcm
+        extra_tags = read_tags(input_path, "album", "genre", "date", "track") \
+            if use_qaac else {}
+
+        def qtags(title):
+            tags = {"title": title}
+            if artist:
+                tags["artist"] = artist
+            tags.update(extra_tags)
+            return tags
+
+        def finalize_qaac(wav_path, final_path, title):
+            if sample_is_float(wav_path):
+                int_wav = temp_wav()
+                run_ffmpeg(wav_path, int_wav, None, depth_pcm,
+                           title, overwrite=True)
+                wav_path = int_wav
+            run_qaac_alac(wav_path, final_path, qtags(title),
+                          overwrite=args.overwrite)
+
         tempdir = None
-        if any(plan[0] != "direct" for _, plan in jobs):
+        if use_qaac or any(plan[0] != "direct" for _, plan in jobs):
             tempdir = Path(tempfile.mkdtemp(prefix="nightcore-"))
         try:
             step = 0
@@ -782,6 +969,7 @@ def main():
             def temp_wav():
                 nonlocal step
                 step += 1
+                assert tempdir is not None
                 return tempdir / f"step{step}.wav"
 
             for (suffix, plan), (_, output_path) in zip(jobs, outputs):
@@ -790,40 +978,56 @@ def main():
                     print(f"Writing {output_path}", file=sys.stderr)
                 kind = plan[0]
                 if kind == "direct":
-                    run_ffmpeg(input_path, output_path, plan[1], out_codec,
-                               new_title, overwrite=args.overwrite)
+                    if use_qaac:
+                        tmp = temp_wav()
+                        run_ffmpeg(input_path, tmp, plan[1], int_temp_codec,
+                                   new_title, overwrite=True)
+                        run_qaac_alac(tmp, output_path, qtags(new_title),
+                                      overwrite=args.overwrite)
+                    else:
+                        run_ffmpeg(input_path, output_path, plan[1], out_codec,
+                                   new_title, overwrite=args.overwrite,
+                                   sample_fmt=depth_fmt)
                 elif kind == "resample":
                     _, prefilter, target = plan
                     tmp1, tmp2 = temp_wav(), temp_wav()
                     run_ffmpeg(input_path, tmp1, prefilter, "pcm_f32le",
                                new_title, overwrite=True)
                     run_sox(tmp1, tmp2, ["rate", "-v", str(target)])
-                    run_ffmpeg(tmp2, output_path, None, out_codec,
-                               new_title, overwrite=args.overwrite,
-                               metadata_from=input_path)
+                    if use_qaac:
+                        finalize_qaac(tmp2, output_path, new_title)
+                    else:
+                        run_ffmpeg(tmp2, output_path, None, out_codec,
+                                   new_title, overwrite=args.overwrite,
+                                   metadata_from=input_path,
+                                   sample_fmt=depth_fmt)
                 elif kind == "pitch":
                     _, pitched_rate, cents, target = plan
                     tmp1, tmp2 = temp_wav(), temp_wav()
                     run_ffmpeg(input_path, tmp1, None, "pcm_f32le",
                                new_title, overwrite=True)
-                    effects = ["rate", str(pitched_rate), "pitch", repr(cents)]
+                    effects = ["rate", "-v", str(pitched_rate), "pitch", repr(cents)]
                     if target is not None:
                         effects += ["rate", "-v", str(target)]
                     run_sox(tmp1, tmp2, effects)
-                    run_ffmpeg(tmp2, output_path, None, out_codec,
-                               new_title, overwrite=args.overwrite,
-                               metadata_from=input_path)
+                    if use_qaac:
+                        finalize_qaac(tmp2, output_path, new_title)
+                    else:
+                        run_ffmpeg(tmp2, output_path, None, out_codec,
+                                   new_title, overwrite=args.overwrite,
+                                   metadata_from=input_path,
+                                   sample_fmt=depth_fmt)
         finally:
             if tempdir is not None:
                 shutil.rmtree(tempdir, ignore_errors=True)
         return 0
 
     except subprocess.CalledProcessError as e:
-        print(f"\nffmpeg/sox failed with exit code {e.returncode}", file=sys.stderr)
+        print(f"\nffmpeg/sox/qaac failed with exit code {e.returncode}", file=sys.stderr)
         return 1
 
     except FileNotFoundError:
-        print("Error: 'ffmpeg'/'sox' not found. Is ffmpeg installed (and sox for --pitch/resampling)?", file=sys.stderr)
+        print("Error: 'ffmpeg'/'sox'/'qaac' not found. Is ffmpeg installed (plus sox for --pitch/resampling)?", file=sys.stderr)
         return 127
 
 

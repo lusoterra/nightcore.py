@@ -9,7 +9,7 @@ _nightcore() {
         cword=$COMP_CWORD
     }
 
-    local opts="-s --speed -r --reciprocal -R --resample --target-rate -B --both -F --format -p --pitch -S --semitones --pitch-diff -y --overwrite -h --help"
+    local opts="-s --speed -r --reciprocal -R --resample -B --both -F --format -p --pitch -S --semitones --pitch-diff --speed-diff -n --dry-run -y --overwrite -h --help"
 
     case "$prev" in
         -s|--speed)
@@ -20,10 +20,6 @@ _nightcore() {
         -S|--semitones)
             # Semitone equivalents of common speed factors
             COMPREPLY=($(compgen -W "1.65 2.41 3.16 3.86 4.55 -1.82 -2.80 -3.86" -- "$cur"))
-            return 0
-            ;;
-        --target-rate)
-            COMPREPLY=($(compgen -W "44100 48000 88200 96000 176400 192000" -- "$cur"))
             return 0
             ;;
         -F|--format)
