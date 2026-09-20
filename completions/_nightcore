@@ -12,16 +12,18 @@ _nightcore() {
         '--reciprocal[Use reciprocal of speed (1.2 becomes 1\/1.2)]' \
         '-R[Resample output to the next higher standard sample rate]' \
         '--resample[Resample output to the next higher standard sample rate]' \
-        '--target-rate+[Explicit resample target in Hz]:rate:(44100 48000 88200 96000 176400 192000)' \
-        '-B[With resampling, generate both the weird-rate and standard-rate files]' \
-        '--both[With resampling, generate both the weird-rate and standard-rate files]' \
+        '-B[With resampling, generate both the non-standard-rate and standard-rate files]' \
+        '--both[With resampling, generate both the non-standard-rate and standard-rate files]' \
         '-F+[Lossless output format]:format:(flac alac wav)' \
         '--format+[Lossless output format]:format:(flac alac wav)' \
         '-p[Pitch-shift only (duration preserved) instead of speeding up]' \
         '--pitch[Pitch-shift only (duration preserved) instead of speeding up]' \
-        '-S+[Shift amount in semitones]:semitones:(1.65 2.41 3.16 3.86 4.55)' \
-        '--semitones+[Shift amount in semitones]:semitones:(1.65 2.41 3.16 3.86 4.55)' \
-        '--pitch-diff+[Pitch difference between two frequencies]: :'
+        '-S+[Pitch-shift by semitones (implies pitch-only)]:semitones:(1.65 2.41 3.16 3.86 4.55)' \
+        '--semitones+[Pitch-shift by semitones (implies pitch-only)]:semitones:(1.65 2.41 3.16 3.86 4.55)' \
+        '--pitch-diff+[Pitch difference calculator]: :' \
+        '--speed-diff+[Semitones to speed factor]: :' \
+        '-n[Print output filename(s) and exit without converting]' \
+        '--dry-run[Print output filename(s) and exit without converting]' \
         '-y[Overwrite output file if it exists]' \
         '--overwrite[Overwrite output file if it exists]' \
         '-h[Show help]' \
