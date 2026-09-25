@@ -1,0 +1,134 @@
+.TH NIGHTCORE 1 "2026-09-25" "nightcore" "User Commands"
+.SH NAME
+nightcore.py \- speed up or pitch-shift audio, losslessly
+.SH SYNOPSIS
+.B nightcore
+[\fIOPTIONS\fR] [\fIinput\fR]
+.br
+.B nightcore --pitch-diff
+\fIF\fR [\fIF\fR]
+.br
+.B nightcore --speed-diff
+\fIST\fR
+.SH DESCRIPTION
+\fBnightcore.py\fR is a simple wrapper that creates bit-perfect Nightcore by altering the
+sample rate of the audio to change speed/pitch file using FFmpeg.
+.PP
+It can also independently pitch up audio with SoX and it automatically upsamples
+the track based on the semitone shift to preserve frenquencies that would
+otherwise be lost.
+.PP
+You can also encode music in a standard sample rate like (ex: 48kHz, 88.2kHz, 96kHz...)
+automatically to be chosen to be the smallest standard frenquency that's still
+higher than the frenquency that FFmpeg's `asetrate` changed.
+.PP
+Most of the flags here should cover 99% of all nightcore tracks from the 2000s.
+.SH OPTIONS
+.TP
+.B -s, --speed \fISPEED\fR
+Speed factor (1.2 = 20% faster). Default 1.0.
+.TP
+.B -r, --reciprocal
+Use 1/speed instead (undo a speedup).
+.TP
+.B -y, --overwrite
+Overwrite existing output files.
+.TP
+.B -R, --resample
+Resample to next standard rate via SoX. Default keeps the non-standard
+rate, bit-perfect.
+.TP
+.B -B, --both
+With
+.BR -R ,
+also keep the non-standard-rate file.
+.TP
+.B -F, --format \fIFMT\fR
+Output format: \fBflac\fR (default), \fBalac\fR (.m4a), \fBwav\fR.
+With a genuine \fBqaac\fR on PATH (verified via
+.IR "qaac --check" ,
+even under wine), ALAC encodes with CoreAudio; otherwise ffmpeg's encoder
+is used.
+.TP
+.B -p, --pitch
+Pitch-shift only, keep duration (needs SoX). Labelled full-precision
+semitones, e.g.
+.IR "[3.1564128700055254st]" ;
+negating the value reverses the shift exactly.
+.TP
+.B -S, --semitones \fIST\fR
+Pitch-shift by semitones: alone it implies \fB-p\fR; with
+\fB-s\fR it makes a combined speed+pitch job.
+.TP
+.B -n, --dry-run
+Print output filename(s), convert nothing.
+.TP
+.B --pitch-diff \fIF\fR [\fIF\fR]
+Calculator, no conversion. One value = speed factor; two values = peak
+frequencies (original, pitched). Prints semitones, cents, speed factor.
+.TP
+.B -D, --denightcore
+Undo from filename tags: reads [Nx]/[Nst] shift tags (including combined
+forms like [1.2x 2.16st]), applies the inverse shift, and removes those
+tags. Quality tags stay intact. Fails if no shift tags are found.
+.TP
+.B --speed-diff \fIST\fR
+Calculator, no conversion: semitones to speed factor.
+.SH EXAMPLES
+.PP
+Speed up 20%:
+.PP
+.RS
+nightcore song.flac -s 1.2 -y
+.RE
+.PP
+Same plus a player-safe resampled copy:
+.PP
+.RS
+nightcore song.flac -s 1.2 -R -B -y
+.RE
+.PP
+Pitch-only remake from measured semitones:
+.PP
+.RS
+nightcore --pitch-diff 54 63
+nightcore song.flac -S 2.6687090560373763 -y
+.RE
+.PP
+Sped up and pitched up in one run:
+.PP
+.RS
+nightcore song.flac -s 1.2 -S 2.166866948 -y
+.RE
+.PP
+Undo a 1.2x speedup:
+.PP
+.RS
+nightcore "Song [1.2x].flac" -s 1.2 -r -y
+.RE
+.PP
+Undo from filename tags:
+.PP
+.RS
+nightcore "Song [1.2x].flac" -D -y
+.RE
+.PP
+Preview names for a bulk rename:
+.PP
+.RS
+for f in *.flac; do nightcore "$f" -s 1.2 -n; done
+.RE
+.SH AUTHOR
+Lev <lev@lusosterone.net>
+.br
+https://git.lusosterone.net/lev/nightcore
+.SH DEPENDENCIES
+At bare minimum python3 and FFmpeg. SoX is required
+for
+.B -p
+and any resampling. A \fBqaac\fR binary is used for ALAC when
+present, with automatic fallback to FFmpeg.
+.SH SEE ALSO
+.BR ffmpeg (1),
+.BR sox (1),
+.BR https://aur.archlinux.org/packages/qaac-wine
