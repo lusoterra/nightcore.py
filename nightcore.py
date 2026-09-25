@@ -60,10 +60,15 @@ OUTPUT_FORMATS = {
 }
 
 
+def _help_formatter(*args, **kwargs):
+    kwargs.setdefault("max_help_position", 32)
+    return argparse.RawTextHelpFormatter(*args, **kwargs)
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Change audio speed/pitch using ffmpeg and sox",
-        formatter_class=argparse.RawTextHelpFormatter
+        formatter_class=_help_formatter
     )
 
     parser.add_argument(
@@ -71,28 +76,28 @@ def parse_arguments():
         type=str,
         nargs="?",
         default=None,
-        help="Input audio file (not needed with --pitch-diff)"
+        help="Input audio file (not needed for --pitch-diff/--speed-diff)"
     )
 
     parser.add_argument(
         "-s", "--speed",
         type=float,
         default=1.0,
-        help="Speed (e.g. 1.2 = 20%% faster, 0.8 = 20%% slower)"
+        help="Speed factor (1.2 = 20%% faster, 0.8 = slower)"
     )
 
     parser.add_argument(
         "-r", "--reciprocal",
         action="store_true",
         default=False,
-        help="Reciprocal (e.g. 1.2 becomes 1/1.2 as the multiplier)"
+        help="Use 1/speed instead (undo a speedup)"
     )
 
     parser.add_argument(
         "-y", "--overwrite",
         action="store_true",
         default=False,
-        help="Overwrite output file if it exists (default: fail if exists)"
+        help="Overwrite existing output files"
     )
 
     parser.add_argument(
@@ -100,9 +105,8 @@ def parse_arguments():
         action="store_true",
         default=False,
         help=(
-            "Resample output to the next higher standard sample rate\n"
-            "for player compatibility (default: keep the non-standard\n"
-            "sample rate, bit-perfect for archival)."
+            "Resample to next standard rate via SoX\n"
+            "(default: keep non-standard rate, bit-perfect)"
         )
     )
 
@@ -110,10 +114,7 @@ def parse_arguments():
         "-B", "--both",
         action="store_true",
         default=False,
-        help=(
-            "With -R/--resample, generate both files:\n"
-            "the non-standard-rate file and the standard-rate file."
-        )
+        help="With -R, also keep the non-standard-rate file"
     )
 
     parser.add_argument(
@@ -121,11 +122,7 @@ def parse_arguments():
         choices=sorted(OUTPUT_FORMATS),
         default="flac",
         metavar="FMT",
-        help=(
-            "Lossless output format (default: flac).\n"
-            "alac = Apple Lossless (.m4a),\n"
-            "wav = Windows-friendly PCM (.wav, bit depth matched)."
-        )
+        help="Output format: flac (default), alac (.m4a), wav"
     )
 
     parser.add_argument(
@@ -133,9 +130,8 @@ def parse_arguments():
         action="store_true",
         default=False,
         help=(
-            "Pitch-shift only (duration preserved) instead of speeding up.\n"
-            "e.g. -s 1.1 shifts pitch by 1.65st (needs sox).\n"
-            "Labelled [1.65st], not [1.1x]."
+            "Pitch-shift only, keep duration (needs sox)\n"
+            "Labelled [Nst] full precision; negating reverses it"
         )
     )
 
@@ -144,21 +140,14 @@ def parse_arguments():
         type=float,
         default=None,
         metavar="ST",
-        help=(
-            "Pitch-shift by ST semitones (implies pitch-only mode,\n"
-            "same as giving the equivalent -s with -p; e.g. 3.16 ~= 1.2x)."
-        )
+        help="Pitch-shift by ST semitones (alone: pitch-only;\nwith -s: speed+pitch combo like [1.2x 2.16st])"
     )
 
     parser.add_argument(
         "-n", "--dry-run",
         action="store_true",
         default=False,
-        help=(
-            "Print the output filename(s) that would be generated\n"
-            "and exit without converting anything (for bulk renaming;\n"
-            "pair with puddletag to rewrite tags from filenames)."
-        )
+        help="Print output names, convert nothing"
     )
 
     parser.add_argument(
@@ -168,9 +157,18 @@ def parse_arguments():
         default=None,
         metavar="F",
         help=(
-            "Pitch difference calculator (prints semitones, cents, speed).\n"
-            "One value = speed factor (e.g. 1.36); two values = peak\n"
-            "frequencies F1 original, F2 pitched. Exits without converting."
+            "Calculator, no conversion: 1 speed or 2 frequencies\n"
+            "-> semitones, cents, speed factor"
+        )
+    )
+
+    parser.add_argument(
+        "-D", "--denightcore",
+        action="store_true",
+        default=False,
+        help=(
+            "Undo from filename tags: reads [Nx]/[Nst], removes them\n"
+            "Keeps quality tags; fails if no shift tags found"
         )
     )
 
@@ -179,10 +177,7 @@ def parse_arguments():
         type=float,
         default=None,
         metavar="ST",
-        help=(
-            "Reverse calculator: semitones ST to speed factor and cents.\n"
-            "Exits without converting."
-        )
+        help="Calculator, no conversion: semitones -> speed factor"
     )
 
     return parser.parse_args()
@@ -445,6 +440,42 @@ def clean_encoder(enc, codec):
     return kept[:32]
 
 
+_SHIFT_TOKEN = re.compile(r"^(-?\d+(?:\.\d+)?)(x|st)$")
+_RATE_TOKEN = re.compile(r"^\d+(?:\.\d+)?kHz$")
+
+
+def split_shift_tags(name):
+    """Strip shift/rate [...] groups; return (cleaned, speed, st, found).
+
+    Removes bracket groups made only of shift tokens ([1.2x], [3.15st],
+    combined [1.2x 2.16st]) and bare rate tags ([88.2kHz]). Quality tags
+    ([mp3 CBR 320k LAME], [16bit 44.1kHz]) and anything else stay verbatim.
+    speed = product of [Nx], st = sum of [Nst]; found tells whether any
+    shift token was seen at all.
+    """
+    speed, st, found = 1.0, 0.0, False
+
+    def _strip(m):
+        nonlocal speed, st, found
+        toks = m.group(1).split()
+        if toks and all(
+            _SHIFT_TOKEN.match(t) or _RATE_TOKEN.match(t) for t in toks
+        ):
+            for t in toks:
+                ms = _SHIFT_TOKEN.match(t)
+                if ms is None:
+                    continue
+                found = True
+                if ms.group(2) == "x":
+                    speed *= float(ms.group(1))
+                else:
+                    st += float(ms.group(1))
+            return ""
+        return m.group(0)
+
+    return " ".join(re.sub(r"\[([^\[\]]*)\]", _strip, name).split()), speed, st, found
+
+
 def lossy_suffix_for(codec, bit_rate, mode=None, encoder=None):
     """Build ' [codec [mode] bitratek [encoder]]' tag for lossy sources.
 
@@ -625,11 +656,12 @@ def find_qaac():
     return None
 
 
-def run_qaac_alac(input_wav, output_m4a, tags, overwrite):
+def run_qaac_alac(input_wav, output_m4a, tags, overwrite, artwork=None):
     """Encode ALAC with qaac (CoreAudio); raises CalledProcessError on failure.
 
     input_wav must be integer PCM (qaac rejects float). tags maps
     title/artist/album/genre/date/track; missing/empty values are skipped.
+    artwork: optional cover-image file passed via --artwork.
     Our own -n/-y preflight already ran, and qaac overwrites silently.
     """
     del overwrite  # handled by our preflight; qaac overwrites regardless
@@ -642,12 +674,41 @@ def run_qaac_alac(input_wav, output_m4a, tags, overwrite):
     track = tags.get("track")
     if track and re.fullmatch(r"\d+(/\d+)?", track):
         cmd += ["--track", track]
+    if artwork is not None:
+        cmd += ["--artwork", str(artwork)]
     cmd += ["-o", str(output_m4a), str(input_wav)]
     subprocess.run(cmd, check=True)
 
 
+def cover_codec_name(path):
+    """Video codec of the first attached picture stream, or None."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=nw=1:nk=1",
+                str(path),
+            ],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    for line in result.stdout.splitlines():
+        name = line.strip().lower()
+        if name:
+            return name
+    return None
+
+
+# Attached-picture codecs safe to pass through (ffmpeg copy) or hand to qaac.
+COVER_CODECS = {"mjpeg": "jpg", "png": "png"}
+
+
 def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
-               metadata_from=None, sample_fmt=None):
+               metadata_from=None, sample_fmt=None, with_cover=False):
     """Run one ffmpeg transcode; raises CalledProcessError on failure.
 
     metadata_from: optional extra input whose global metadata is mapped
@@ -655,6 +716,8 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
     the explicit title always wins. Audio is always taken from input_path.
     sample_fmt: optional forced output depth (s16/s24/s32); None leaves
     the encoder's default negotiation (used for lossless temps/sources).
+    with_cover: also map the attached picture + stream tags from
+    metadata_from (ffmpeg flac/m4a finals on the sox path).
     """
     ffmpeg_cmd = [
         "ffmpeg",
@@ -663,7 +726,11 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
         "-i", str(input_path),
     ]
     if metadata_from is not None:
-        ffmpeg_cmd += ["-i", str(metadata_from), "-map", "0:a", "-map_metadata", "1"]
+        ffmpeg_cmd += ["-i", str(metadata_from), "-map", "0:a", "-map_metadata", "1",
+                       "-map_metadata:s:a", "1:s:a"]
+        if with_cover:
+            ffmpeg_cmd += ["-map", "1:v", "-c:v", "copy",
+                           "-disposition:v", "attached_pic"]
     if audio_filter is not None:
         ffmpeg_cmd += ["-af", audio_filter]
     if sample_fmt is not None:
@@ -732,11 +799,15 @@ def main():
         )
         return 127
 
-    if args.semitones is not None and args.speed != 1.0:
-        print("Error: --semitones cannot be combined with -s/--speed", file=sys.stderr)
-        return 1
-
-    if args.semitones is not None:
+    # -S alone (or with -p) is pitch-only; -s + -S together is one
+    # combined speedup-then-pitch job: bit-perfect asetrate first, then
+    # SoX upsamples by the semitone factor and pitch-shifts.
+    combo = args.semitones is not None and args.speed != 1.0
+    # st_signed is the semitone amount actually applied (reciprocal negates).
+    st_signed = (-args.semitones if args.reciprocal else args.semitones
+                 if args.semitones is not None else None)
+    combo_seq = speed_from_semitones(st_signed) if combo else 1.0
+    if args.semitones is not None and not combo:
         speed = speed_from_semitones(args.semitones)
     else:
         speed = args.speed
@@ -752,15 +823,39 @@ def main():
         print("Error: --both requires -R/--resample", file=sys.stderr)
         return 1
 
+    # -D reads the shift back out of the filename tags ([1.2x], [3.15st],
+    # combined [1.2x 2.16st]) instead of taking -s/-S/-p/-r.
+    d_speed, d_st, d_seq = 1.0, 0.0, 1.0
+    cleaned_stem = None
+    if args.denightcore:
+        for flag, bad in (("-s/--speed", args.speed != 1.0),
+                          ("-S/--semitones", args.semitones is not None),
+                          ("-p/--pitch", args.pitch),
+                          ("-r/--reciprocal", args.reciprocal)):
+            if bad:
+                print(f"Error: --denightcore cannot be combined with {flag} "
+                      "(it reads the shift from filename tags)", file=sys.stderr)
+                return 1
+        cleaned_stem, d_speed, d_st, found = split_shift_tags(input_path.stem)
+        if not found:
+            print(f"Error: no [Nx] or [Nst] shift tags in '{input_path.name}'; "
+                  "--denightcore reads the amount from filename tags like "
+                  "[1.2x] or [3.15st], e.g. nightcore 'Song [1.2x].flac' -D",
+                  file=sys.stderr)
+            return 1
+        speed = 1.0 / d_speed
+        d_seq = speed_from_semitones(d_st)
+
     sample_rate = get_sample_rate(input_path)
     if sample_rate is None:
         print("Error: could not determine input sample rate", file=sys.stderr)
         return 1
 
     # Decide resample target. Default: no resampling (bit-perfect weird rate).
+    # In -D mode the undo itself changes the rate, so select from that.
     target_rate = None
     if args.resample:
-        effective_rate = sample_rate * speed
+        effective_rate = sample_rate * speed * combo_seq / d_seq
         target_rate = next_standard_rate(effective_rate)
         if target_rate is None:
             print(
@@ -803,20 +898,29 @@ def main():
         # Float/unknown depth (e.g. 32-bit float masters): rate only.
         middle_suffix = f" [{format_rate(sample_rate)}]"
     # -S/--semitones implies pitch-only; -p is the -s spelling of the same.
-    pitch_mode = (args.pitch or args.semitones is not None) and speed != 1.0
+    # -D inverts parsed tags: pitch is needed whenever parsed st != 0.
+    pitch_mode = ((args.pitch or args.semitones is not None) and speed != 1.0
+                  or (args.denightcore and d_st != 0.0))
     if pitch_mode:
-        # In pitch mode the label is semitones: -s 1.2 -> 3.16st.
-        # With --semitones the input value is reused (negated by -r).
-        if args.semitones is not None:
-            st_label = -args.semitones if args.reciprocal else args.semitones
+        # In pitch mode the label is semitones; --semitones input is reused
+        # verbatim, otherwise derived from the speed factor. Combo jobs
+        # label both parts: [1.2x 2.166866948st].
+        st_label = (st_signed if st_signed is not None
+                    else semitones_from_speed(speed))
+        # Full precision: negating the label value inverts the shift exactly.
+        if combo:
+            mode_suffix = f" [{speed:g}x {st_label!r}st]"
         else:
-            st_label = semitones_from_speed(speed)
-        mode_suffix = f" [{st_label:.2f}st]"
+            mode_suffix = f" [{st_label!r}st]"
     else:
         mode_suffix = "" if speed == 1.0 else f" [{speed:g}x]"
     rate_suffix = f" [{format_rate(target_rate)}]" if target_rate is not None else ""
     weird_suffix = mode_suffix + middle_suffix
     standard_suffix = weird_suffix + rate_suffix
+    if args.denightcore:
+        # Output name comes from the stripped input name instead; only a
+        # fresh rate tag is appended when resampling now.
+        weird_suffix, standard_suffix = "", rate_suffix
 
     out_ext = OUTPUT_FORMATS[args.format]["ext"]
     out_codec = OUTPUT_FORMATS[args.format]["codec"] or wav_codec_for(bits)
@@ -826,7 +930,8 @@ def main():
     depth_fmt = None if (bits is not None and bits > 16) else "s16"
     depth_pcm = wav_codec_for(bits)
 
-    if not weird_suffix and not rate_suffix and input_path.suffix.lower() == out_ext:
+    if (not args.denightcore and not weird_suffix and not rate_suffix
+            and input_path.suffix.lower() == out_ext):
         print(
             "Error: nothing to do (speed is 1 and no resampling requested)",
             file=sys.stderr,
@@ -858,23 +963,36 @@ def main():
 
     # Job list: (suffix, plan). --both emits the weird-rate file first,
     # then the standard-rate file. Plans:
-    #   ("direct", audio_filter)               - ffmpeg only (weird speedup)
-    #   ("resample", prefilter, target)        - ffmpeg -> sox rate -> ffmpeg
-    #   ("pitch", pitched_rate, cents, target) - ffmpeg -> sox rate+pitch -> ffmpeg
+    #   ("direct", audio_filter)                        - ffmpeg only (weird speedup)
+    #   ("resample", prefilter, target)                 - ffmpeg -> sox rate -> ffmpeg
+    #   ("pitch", prefilter, pitched_rate, cents, target) - ffmpeg -> sox rate+pitch -> ffmpeg
     # Temp WAVs are f32 (exact for <=24-bit int and float32 sources).
     jobs: list[tuple[str, Any]]
     if pitch_mode:
-        pitched_rate = round(sample_rate * speed)
-        cents = semitones_from_speed(speed) * 100.0
+        # d_seq folds a -D pitch inversion into the same math (1.0 otherwise).
+        # -D on a standard-rate file inverts a rate-preserving pitch job,
+        # so keep the rate instead of scaling it back down.
+        if args.denightcore and d_st != 0.0 and sample_rate in STANDARD_SAMPLE_RATES:
+            pitched_rate = round(sample_rate * speed)
+        else:
+            pitched_rate = round(sample_rate * speed * combo_seq / d_seq)
+        if combo:
+            cents = st_signed * 100.0
+        else:
+            cents = (-d_st * 100.0 if args.denightcore and d_st != 0.0
+                     else semitones_from_speed(speed / d_seq) * 100.0)
+        # -D combined undo slows down first via asetrate; combo speeds up
+        # first the same way (plain pitch jobs decode unfiltered).
+        prefilter = weird_filter() if (args.denightcore or combo) else None
         if args.both and target_rate is not None:
             jobs = [
-                (weird_suffix, ("pitch", pitched_rate, cents, None)),
-                (standard_suffix, ("pitch", pitched_rate, cents, target_rate)),
+                (weird_suffix, ("pitch", prefilter, pitched_rate, cents, None)),
+                (standard_suffix, ("pitch", prefilter, pitched_rate, cents, target_rate)),
             ]
         elif target_rate is not None:
-            jobs = [(standard_suffix, ("pitch", pitched_rate, cents, target_rate))]
+            jobs = [(standard_suffix, ("pitch", prefilter, pitched_rate, cents, target_rate))]
         else:
-            jobs = [(weird_suffix, ("pitch", pitched_rate, cents, None))]
+            jobs = [(weird_suffix, ("pitch", prefilter, pitched_rate, cents, None))]
     elif args.both and target_rate is not None:
         jobs = [
             (weird_suffix, ("direct", weird_filter())),
@@ -901,11 +1019,18 @@ def main():
     # tag; "Title" is the embedded title, falling back to the filename).
     # The Title tag is the same minus the artist prefix. Names are
     # sanitized for Linux/Windows-safe filenames. Preserve input directory.
+    # -D instead strips shift/rate tags off the input's own name and title,
+    # keeping quality tags verbatim.
     artist_prefix = f"{artist} - " if artist else ""
+    if args.denightcore:
+        original_title = split_shift_tags(original_title)[0]
+        name_base = cleaned_stem
+    else:
+        name_base = artist_prefix + original_title
     outputs = [
         (
             suffix,
-            input_path.parent / (sanitize_filename(artist_prefix + original_title + suffix) + out_ext),
+            input_path.parent / (sanitize_filename(name_base + suffix) + out_ext),
         )
         for suffix, _ in jobs
     ]
@@ -958,7 +1083,7 @@ def main():
                            title, overwrite=True)
                 wav_path = int_wav
             run_qaac_alac(wav_path, final_path, qtags(title),
-                          overwrite=args.overwrite)
+                          overwrite=args.overwrite, artwork=cover_tmp)
 
         tempdir = None
         if use_qaac or any(plan[0] != "direct" for _, plan in jobs):
@@ -972,6 +1097,26 @@ def main():
                 assert tempdir is not None
                 return tempdir / f"step{step}.wav"
 
+            # Attached pictures don't survive temp WAVs: extract once so
+            # sox-path and qaac finals can reattach them. (The direct
+            # ffmpeg path auto-maps covers already; the wav muxer can't
+            # carry video, so wav outputs skip this.)
+            cover_tmp = None
+            if use_qaac or (out_ext in (".flac", ".m4a")
+                            and any(plan[0] != "direct" for _, plan in jobs)):
+                cc = cover_codec_name(input_path)
+                if cc in COVER_CODECS:
+                    try:
+                        cover_tmp = tempdir / f"cover.{COVER_CODECS[cc]}"
+                        subprocess.run(
+                            ["ffmpeg", "-nostdin", "-y",
+                             "-i", str(input_path),
+                             "-map", "0:v", "-c", "copy", str(cover_tmp)],
+                            check=True, capture_output=True,
+                        )
+                    except (subprocess.CalledProcessError, OSError):
+                        cover_tmp = None
+
             for (suffix, plan), (_, output_path) in zip(jobs, outputs):
                 new_title = original_title + suffix
                 if total > 1:
@@ -983,7 +1128,7 @@ def main():
                         run_ffmpeg(input_path, tmp, plan[1], int_temp_codec,
                                    new_title, overwrite=True)
                         run_qaac_alac(tmp, output_path, qtags(new_title),
-                                      overwrite=args.overwrite)
+                                      overwrite=args.overwrite, artwork=cover_tmp)
                     else:
                         run_ffmpeg(input_path, output_path, plan[1], out_codec,
                                    new_title, overwrite=args.overwrite,
@@ -1000,13 +1145,19 @@ def main():
                         run_ffmpeg(tmp2, output_path, None, out_codec,
                                    new_title, overwrite=args.overwrite,
                                    metadata_from=input_path,
-                                   sample_fmt=depth_fmt)
+                                   sample_fmt=depth_fmt,
+                                   with_cover=cover_tmp is not None)
                 elif kind == "pitch":
-                    _, pitched_rate, cents, target = plan
+                    _, prefilter, pitched_rate, cents, target = plan
                     tmp1, tmp2 = temp_wav(), temp_wav()
-                    run_ffmpeg(input_path, tmp1, None, "pcm_f32le",
+                    run_ffmpeg(input_path, tmp1, prefilter, "pcm_f32le",
                                new_title, overwrite=True)
-                    effects = ["rate", "-v", str(pitched_rate), "pitch", repr(cents)]
+                    tmp_rate = (sample_rate * speed if prefilter is not None
+                                else sample_rate)
+                    effects = []
+                    if pitched_rate != round(tmp_rate):
+                        effects += ["rate", "-v", str(pitched_rate)]
+                    effects += ["pitch", repr(cents)]
                     if target is not None:
                         effects += ["rate", "-v", str(target)]
                     run_sox(tmp1, tmp2, effects)
@@ -1016,7 +1167,8 @@ def main():
                         run_ffmpeg(tmp2, output_path, None, out_codec,
                                    new_title, overwrite=args.overwrite,
                                    metadata_from=input_path,
-                                   sample_fmt=depth_fmt)
+                                   sample_fmt=depth_fmt,
+                                   with_cover=cover_tmp is not None)
         finally:
             if tempdir is not None:
                 shutil.rmtree(tempdir, ignore_errors=True)

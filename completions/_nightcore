@@ -22,6 +22,8 @@ _nightcore() {
         '--semitones+[Pitch-shift by semitones (implies pitch-only)]:semitones:(1.65 2.41 3.16 3.86 4.55)' \
         '--pitch-diff+[Pitch difference calculator]: :' \
         '--speed-diff+[Semitones to speed factor]: :' \
+        '-D[Undo from filename tags: reads and removes Nx/Nst]' \
+        '--denightcore[Undo from filename tags: reads and removes Nx/Nst]' \
         '-n[Print output filename(s) and exit without converting]' \
         '--dry-run[Print output filename(s) and exit without converting]' \
         '-y[Overwrite output file if it exists]' \

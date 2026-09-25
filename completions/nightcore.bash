@@ -9,7 +9,7 @@ _nightcore() {
         cword=$COMP_CWORD
     }
 
-    local opts="-s --speed -r --reciprocal -R --resample -B --both -F --format -p --pitch -S --semitones --pitch-diff --speed-diff -n --dry-run -y --overwrite -h --help"
+    local opts="-s --speed -r --reciprocal -R --resample -B --both -F --format -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run -y --overwrite -h --help"
 
     case "$prev" in
         -s|--speed)
