@@ -18,7 +18,9 @@ It can also independently pitch audio with rubberband. Shifting up
 first upsamples with SoX (shifted highs would otherwise fold back as
 audible garbage); shifting down pitches at the current rate and settles
 the rate afterwards (pre-downsampling would brickwall restorable highs).
-Either way duration is preserved.
+Either way duration is preserved. Resampling that would clip a hot
+master is redone with headroom instead of flat-topping it, and integer
+encodes of processed audio use triangular dither.
 .PP
 You can also encode music in a standard sample rate like (ex: 48kHz, 88.2kHz, 96kHz...)
 automatically to be chosen to be the smallest standard frequency that's still
