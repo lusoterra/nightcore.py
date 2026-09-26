@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -413,6 +414,99 @@ def wav_codec_for(bits):
     if bits <= 24:
         return "pcm_s24le"
     return "pcm_s32le"
+
+
+def wav_peak_db(path):
+    """Peak level in dBFS of a wav via sox stats; None if unreadable."""
+    try:
+        result = subprocess.run(
+            ["sox", str(path), "-n", "stats"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    match = re.search(r"(?m)^Pk lev dB\s+(.+)$", result.stderr or "")
+    if not match:
+        return None
+    try:
+        vals = [float(t)
+                for t in re.findall(r"-?\d+(?:\.\d+)?", match.group(1))]
+    except ValueError:
+        return None
+    return max(vals) if vals else None
+
+
+def tame_hot_wav(path, make_temp):
+    """Attenuate a rubberband temp peaking over 0dBFS; return wav to use.
+
+    Rubberband (unlike SoX) does not clamp float output: if its
+    auto-gain hits the floor, peaks can exceed full scale and would
+    flat-top at the int encode. Trim to -1dBFS peak -- deterministic
+    and minimal -- via make_temp(); files at/below full scale pass
+    through untouched (no extra stage, bit-identical).
+    Returns (path_to_use, trimmed).
+    """
+    peak = wav_peak_db(path)
+    if peak is None or peak <= 0.0:
+        return path, False
+    gain_db = -(peak + 1.0)
+    new_path = make_temp()
+    say(f"  SoX anti-clip trim {gain_db:+.2f} dB "
+        f"(peak was {peak:+.2f} dBFS)")
+    run_sox(path, new_path, ["gain", f"{gain_db:.4f}"])
+    return new_path, True
+
+
+def run_sox_rate(input_path, output_path, target):
+    """SoX VHQ resample, redoing with headroom if it clips.
+
+    SoX clamps overshoots (even float output) instead of preserving
+    them, so hot masters would flat-top here -- 220k samples clamped
+    in a square-wave torture test. Its own "clipped N samples" warning
+    is the detector: on the first occurrence the resample is redone as
+    gain -h + rate, which reserves headroom. Clean files take the
+    single plain pass (bit-identical to before). Progress passes
+    through live unless -q/--quiet. (Callers announce the stage line;
+    only the headroom redo is announced here.)
+    """
+    proc = subprocess.Popen(
+        ["sox", "-S", str(input_path), str(output_path),
+         "rate", "-v", str(target)],
+        start_new_session=True, stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE)
+    global _active_proc
+    _active_proc = proc
+    chunks = []
+
+    def _pump():
+        while True:
+            data = proc.stderr.read(65536)
+            if not data:
+                break
+            chunks.append(data)
+            if not _quiet:
+                sys.stderr.buffer.write(data)
+                sys.stderr.buffer.flush()
+
+    pump = threading.Thread(target=_pump, daemon=True)
+    try:
+        pump.start()
+        returncode = proc.wait()
+    finally:
+        _active_proc = None
+    pump.join()
+    blob = b"".join(chunks)
+    if returncode != 0:
+        if _quiet >= 1 and blob:
+            sys.stderr.buffer.write(blob)
+            sys.stderr.buffer.flush()
+        raise subprocess.CalledProcessError(
+            returncode, ["sox", "rate", str(target)])
+    if b"clipped " in blob:
+        say("  SoX clipped a hot master: redoing with headroom (gain -h)")
+        run_sox(input_path, output_path, ["gain", "-h", "rate", "-v",
+                                          str(target)])
+    return returncode
 
 
 def get_audio_info(input_path):
@@ -845,7 +939,7 @@ def run_lrc(args, input_path, out_dir, ctx):
     if stem is None:
         # No same-stem parent audio (or unreadable): fall back to the
         # plain shift-suffixed name.
-        stem = sanitize_filename(f"{input_path.stem} [{speed:g}x]")
+        stem = sanitize_filename(f"{input_path.stem} [{speed!r}x]")
     output_path = ((out_dir if out_dir is not None else input_path.parent)
                    / (stem + ".lrc"))
     if args.dry_run:
@@ -1534,7 +1628,8 @@ _TAG_ALIASES = {"albumartist": "album_artist"}
 def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
                metadata_from=None, sample_fmt=None, with_cover=False,
                cover_file=None, strip_tags=False, extra_tags=None,
-               ffmpeg_args=None, drop_video=False, drop_tags=None):
+               ffmpeg_args=None, drop_video=False, drop_tags=None,
+               dither=None):
     """Run one ffmpeg transcode; raises CalledProcessError on failure.
 
     metadata_from: optional extra input whose global metadata is mapped
@@ -1552,6 +1647,9 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
     drop_tags: tag names (case-insensitive) to exclude while mapping
     (lossy outputs drop stale source encoder tags); implemented as an
     explicit pass-through of everything else.
+    dither: integer depth ("s16"/"s24"/"s32") to triangular-dither to
+    on int encodes of processed (fractional) audio; None leaves direct
+    bit-perfect paths undithered.
     """
     ffmpeg_cmd = [
         "ffmpeg",
@@ -1606,8 +1704,14 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
                 ffmpeg_cmd += ["-metadata:s:a", f"{key}={value}"]
     for key, value in (extra_tags or {}).items():
         ffmpeg_cmd += ["-metadata", f"{key}={value}"]
-    if audio_filter is not None:
-        ffmpeg_cmd += ["-af", audio_filter]
+    audio_filter_chain = audio_filter
+    if dither is not None:
+        dither_filter = (f"aresample=dither_method=triangular:"
+                         f"out_sample_fmt={dither}")
+        audio_filter_chain = (f"{audio_filter_chain},{dither_filter}"
+                              if audio_filter_chain else dither_filter)
+    if audio_filter_chain is not None:
+        ffmpeg_cmd += ["-af", audio_filter_chain]
     if sample_fmt is not None:
         ffmpeg_cmd += ["-sample_fmt", sample_fmt]
     ffmpeg_cmd += [
@@ -1641,7 +1745,7 @@ def main():
                       file=sys.stderr)
                 return 1
             st = 12.0 * math.log2(factor)
-            print(f"speed {factor:g}x = {st!r}st ({st * 100!r} cents)")
+            print(f"speed {factor!r}x = {st!r}st ({st * 100!r} cents)")
         elif len(vals) == 2:
             f1, f2 = vals
             if (f1 <= 0 or f2 <= 0
@@ -1650,7 +1754,7 @@ def main():
                       file=sys.stderr)
                 return 1
             st = 12.0 * math.log2(f2 / f1)
-            print(f"{f2:g} Hz vs {f1:g} Hz: {st!r}st ({st * 100!r} cents), "
+            print(f"{f2!r} Hz vs {f1!r} Hz: {st!r}st ({st * 100!r} cents), "
                   f"speed {f2 / f1!r}x")
         else:
             print("Error: --pitch-diff takes one speed factor or two frequencies",
@@ -1718,7 +1822,7 @@ def main():
     eff_semitones = rb_pitch if rb_pitch is not None else args.semitones
     if rb_pitch is not None and (args.semitones is not None
                                  or (args.pitch and args.speed != 1.0)):
-        print(f"Warning: --rb-params -p {rb_pitch:g} overrides the pitch amount",
+        print(f"Warning: --rb-params -p {rb_pitch!r} overrides the pitch amount",
               file=sys.stderr)
     combo = eff_semitones is not None and args.speed != 1.0
     # st_signed is the semitone amount actually applied (reciprocal negates).
@@ -2000,7 +2104,9 @@ def run_conversion(args, input_path, out_dir, ctx):
                 cur_rate = (round(sample_rate * speed)
                             if prefilter is not None else sample_rate)
                 if pitch_st >= 0:
-                    if pitched_rate != cur_rate:
+                    prescale_to = (target if target is not None
+                                   else pitched_rate)
+                    if prescale_to != cur_rate:
                         return True
                 elif target is not None or pitched_rate != cur_rate:
                     return True
@@ -2136,7 +2242,7 @@ def run_conversion(args, input_path, out_dir, ctx):
 
         def finalize_ffmpeg(wav_path, final_path, title, codec, sample_fmt,
                             ffmpeg_args=None, drop_video=False,
-                            drop_tags=None):
+                            drop_tags=None, dither=None):
             run_ffmpeg(wav_path, final_path, None, codec, title,
                        overwrite=args.overwrite,
                        metadata_from=meta_src,
@@ -2148,26 +2254,37 @@ def run_conversion(args, input_path, out_dir, ctx):
                        extra_tags=extra_tags or None,
                        ffmpeg_args=ffmpeg_args,
                        drop_video=drop_video,
-                       drop_tags=drop_tags)
+                       drop_tags=drop_tags,
+                       dither=dither)
             normalize_cover(final_path)
 
         def normalize_cover(final_path):
             if out_ext == ".flac" and (
                     norm_image is not None or want_c is not None
                     or want_d is not None or stub_encoder is not None):
+                fixed = []
+                if norm_image is not None:
+                    fixed.append("Cover (front) picture")
+                if want_c is not None or want_d is not None:
+                    fixed.append("COMMENT/DESCRIPTION")
+                if stub_encoder is not None:
+                    fixed.append("ENCODER")
                 if not flac_postprocess(final_path, norm_image, norm_mime,
                                         want_c, want_d, stub_encoder):
                     print(f"Warning: metaflac fixes failed on {final_path}",
                           file=sys.stderr)
+                elif fixed:
+                    say(f"  metaflac: {', '.join(fixed)}")
 
         def finalize_qaac(wav_path, final_path, title, alac=True,
-                          extra_args=()):
+                          extra_args=(), dither=None):
             if sample_is_float(wav_path):
                 int_wav = temp_wav()
                 run_ffmpeg(wav_path, int_wav, None, depth_pcm,
-                           title, overwrite=True)
+                           title, overwrite=True, dither=dither)
                 wav_path = int_wav
             qtmp = temp_file("m4a")
+            say(f"  qaac encode {'alac' if alac else 'aac'}")
             run_qaac_alac(wav_path, qtmp, alac=alac, extra_args=extra_args)
             # Tags and cover art go through ffmpeg, never qaac. AAC is
             # lossy: drop stale source encoder tags (ALAC keeps them).
@@ -2176,6 +2293,7 @@ def run_conversion(args, input_path, out_dir, ctx):
 
         def finalize_lame(wav_path, final_path, title):
             ltmp = temp_file("mp3")
+            say("  lame encode mp3")
             run_lame(wav_path, ltmp, lossy_opts)
             # Tags and cover art go through ffmpeg, never lame.
             finalize_ffmpeg(ltmp, final_path, title, "copy", None,
@@ -2194,16 +2312,25 @@ def run_conversion(args, input_path, out_dir, ctx):
 
         def finalize_opusenc(wav_path, final_path, title):
             cover = flag_cover or cover_tmp
+            say("  opusenc encode")
             run_opusenc(wav_path, final_path, opus_tags_for(title),
                         cover, lossy_opts)
 
         def finalize_wav(wav_path, final_path, title, codec, sample_fmt):
             drop = (is_lossy_output and be_kind == "ffmpeg"
                     and args.format == "opus")
+            # Triangular dither on processed 16-bit encodes (resample/pitch
+            # temps always hold fractional values, so truncation would
+            # correlate; deeper targets keep sub-LSB detail unaided).
+            # Float-accepting lossy encoders get untouched float, direct
+            # paths stay bit-perfect.
+            dither = ("s16" if (not is_lossy_output
+                                and sample_fmt == "s16") else None)
             finalize_ffmpeg(wav_path, final_path, title, codec,
                             sample_fmt, ffmpeg_args=enc_args or None,
                             drop_video=drop,
-                            drop_tags=STALE_TAGS if is_lossy_output else None)
+                            drop_tags=STALE_TAGS if is_lossy_output else None,
+                            dither=dither)
 
         # Cover art: --cover wins outright; otherwise the original picture
         # is reused (extracted file for qaac/lame/opusenc, mapped stream
@@ -2277,6 +2404,23 @@ def run_conversion(args, input_path, out_dir, ctx):
             enc_label = be_kind
         else:
             enc_label = out_codec
+        # 32-bit int sources need s32 temps (f32's 24-bit mantissa would
+        # eat LSBs); everything else rides exact in f32.
+        tmp_codec = ("pcm_s32le" if (bits is not None and bits > 24)
+                     else "pcm_f32le")
+        # Triangular-dither target for processed int encodes through
+        # qaac's float-int conversion temp: 16-bit only (deeper targets
+        # keep sub-LSB detail unaided). Direct paths pass None to stay
+        # bit-perfect.
+        qaac_dither = ("s16" if depth_pcm == "pcm_s16le" else None)
+
+        def ffmpeg_step(audio_filter):
+            # Announce an ffmpeg decode/speedup step (its log is piped
+            # away under -q, so without this the stage goes unseen).
+            if audio_filter is not None and "asetrate" in audio_filter:
+                say(f"  ffmpeg {audio_filter}")
+            else:
+                say("  ffmpeg decode")
 
         try:
             step = 0
@@ -2330,7 +2474,7 @@ def run_conversion(args, input_path, out_dir, ctx):
                 elif kind == "resample":
                     desc = f"resample to {format_rate(plan[2])}"
                 else:
-                    desc = f"pitch {plan[3]:+g}st"
+                    desc = f"pitch {plan[3]:+}st"
                     if plan[4] is not None:
                         desc += f" + resample to {format_rate(plan[4])}"
                 say(f"[{ji + 1}/{total}] {output_path.name}: {desc} "
@@ -2339,6 +2483,7 @@ def run_conversion(args, input_path, out_dir, ctx):
                 if kind == "direct":
                     if use_qaac:
                         tmp = temp_wav()
+                        ffmpeg_step(plan[1])
                         run_ffmpeg(input_path, tmp, plan[1], depth_pcm,
                                    new_title, overwrite=True)
                         is_alac = (args.format == "alac")
@@ -2348,15 +2493,18 @@ def run_conversion(args, input_path, out_dir, ctx):
                                                   else lossy_opts))
                     elif be_kind == "lame":
                         tmp = temp_wav()
-                        run_ffmpeg(input_path, tmp, plan[1], "pcm_f32le",
+                        ffmpeg_step(plan[1])
+                        run_ffmpeg(input_path, tmp, plan[1], tmp_codec,
                                    new_title, overwrite=True)
                         finalize_lame(tmp, output_path, new_title)
                     elif be_kind == "opusenc":
                         tmp = temp_wav()
-                        run_ffmpeg(input_path, tmp, plan[1], "pcm_f32le",
+                        ffmpeg_step(plan[1])
+                        run_ffmpeg(input_path, tmp, plan[1], tmp_codec,
                                    new_title, overwrite=True)
                         finalize_opusenc(tmp, output_path, new_title)
                     elif is_lossy_output and be_kind == "ffmpeg":
+                        ffmpeg_step(plan[1])
                         run_ffmpeg(input_path, output_path, plan[1],
                                    enc_codec, new_title,
                                    overwrite=args.overwrite,
@@ -2369,6 +2517,7 @@ def run_conversion(args, input_path, out_dir, ctx):
                                    drop_tags=STALE_TAGS)
                         normalize_cover(output_path)
                     else:
+                        ffmpeg_step(plan[1])
                         run_ffmpeg(input_path, output_path, plan[1], out_codec,
                                    new_title, overwrite=args.overwrite,
                                    sample_fmt=depth_fmt,
@@ -2380,16 +2529,18 @@ def run_conversion(args, input_path, out_dir, ctx):
                 elif kind == "resample":
                     _, prefilter, target = plan
                     tmp1, tmp2 = temp_wav(), temp_wav()
-                    run_ffmpeg(input_path, tmp1, prefilter, "pcm_f32le",
+                    ffmpeg_step(prefilter)
+                    run_ffmpeg(input_path, tmp1, prefilter, tmp_codec,
                                new_title, overwrite=True)
                     say(f"  SoX resample to {format_rate(target)}")
-                    run_sox(tmp1, tmp2, ["rate", "-v", str(target)])
+                    run_sox_rate(tmp1, tmp2, target)
                     if use_qaac:
                         is_alac = (args.format == "alac")
                         finalize_qaac(tmp2, output_path, new_title,
                                       alac=is_alac,
                                       extra_args=([] if is_alac
-                                                  else lossy_opts))
+                                                  else lossy_opts),
+                                      dither=qaac_dither)
                     elif be_kind == "lame":
                         finalize_lame(tmp2, output_path, new_title)
                     elif be_kind == "opusenc":
@@ -2400,24 +2551,36 @@ def run_conversion(args, input_path, out_dir, ctx):
                 elif kind == "pitch":
                     _, prefilter, pitched_rate, pitch_st, target, rb_job = plan
                     tmp1 = temp_wav()
-                    run_ffmpeg(input_path, tmp1, prefilter, "pcm_f32le",
+                    ffmpeg_step(prefilter)
+                    run_ffmpeg(input_path, tmp1, prefilter, tmp_codec,
                                new_title, overwrite=True)
                     # tmp1 rate: post-prefilter if any, else the input rate.
                     cur_rate = (round(sample_rate * speed)
                                 if prefilter is not None else sample_rate)
                     cur = tmp1
-                    if pitch_st >= 0 and pitched_rate != cur_rate:
+                    if pitch_st >= 0:
                         # Shift up: SoX pre-scales first, otherwise shifted
                         # highs alias straight back into the audible band.
-                        tmp2 = temp_wav()
-                        say(f"  SoX prescale to {format_rate(pitched_rate)} "
-                            "for pitch headroom")
-                        run_sox(cur, tmp2, ["rate", "-v", str(pitched_rate)])
-                        cur = tmp2
-                        cur_rate = pitched_rate
+                        # With -R the target already sits above the pitched
+                        # rate, so one pass covers headroom and settling.
+                        prescale_to = (target if target is not None
+                                       else pitched_rate)
+                        if prescale_to != cur_rate:
+                            tmp2 = temp_wav()
+                            if target is not None:
+                                say(f"  SoX prescale to {format_rate(target)} "
+                                    "(pitch headroom + resample)")
+                            else:
+                                say(f"  SoX prescale to {format_rate(pitched_rate)} "
+                                    "for pitch headroom")
+                            run_sox_rate(cur, tmp2, prescale_to)
+                            cur = tmp2
+                            cur_rate = prescale_to
                     tmp3 = temp_wav()
-                    say(f"  rubberband pitch {pitch_st:+g}st")
+                    say(f"  rubberband pitch {pitch_st:+}st")
                     run_rubberband(cur, tmp3, pitch_st, rb_job)
+                    cur = tmp3
+                    cur, _ = tame_hot_wav(cur, temp_wav)
                     cur = tmp3
                     # Settle the rate afterwards: the explicit target, else
                     # the pitched rate for down-shifts (up-shifts already
@@ -2427,14 +2590,15 @@ def run_conversion(args, input_path, out_dir, ctx):
                     if settle is not None and settle != cur_rate:
                         tmp4 = temp_wav()
                         say(f"  SoX settle to {format_rate(settle)}")
-                        run_sox(cur, tmp4, ["rate", "-v", str(settle)])
+                        run_sox_rate(cur, tmp4, settle)
                         cur = tmp4
                     if use_qaac:
                         is_alac = (args.format == "alac")
                         finalize_qaac(cur, output_path, new_title,
                                       alac=is_alac,
                                       extra_args=([] if is_alac
-                                                  else lossy_opts))
+                                                  else lossy_opts),
+                                      dither=qaac_dither)
                     elif be_kind == "lame":
                         finalize_lame(cur, output_path, new_title)
                     elif be_kind == "opusenc":
@@ -2543,6 +2707,7 @@ def resolve_audio_naming(args, tmpl, rb_extras, input_path, speed,
         # Float/unknown depth (e.g. 32-bit float masters): rate only.
         middle_suffix = f" [{format_rate(sample_rate)}]"
     # -S/--semitones implies pitch-only; -p is the -s spelling of the same.
+    # Alongside -S, -p is completely ignored (same amount either way).
     # -D inverts parsed tags: pitch is needed whenever parsed st != 0.
     pitch_mode = ((args.pitch or eff_semitones is not None) and speed != 1.0
                   or (args.denightcore and d_st != 0.0))
@@ -2554,11 +2719,11 @@ def resolve_audio_naming(args, tmpl, rb_extras, input_path, speed,
                     else semitones_from_speed(speed))
         # Full precision: negating the label value inverts the shift exactly.
         if combo:
-            mode_suffix = f" [{speed:g}x {st_label!r}st]"
+            mode_suffix = f" [{speed!r}x {st_label!r}st]"
         else:
             mode_suffix = f" [{st_label!r}st]"
     else:
-        mode_suffix = "" if speed == 1.0 else f" [{speed:g}x]"
+        mode_suffix = "" if speed == 1.0 else f" [{speed!r}x]"
     rate_suffix = f" [{format_rate(target_rate)}]" if target_rate is not None else ""
     # Recorded rubberband extras ride along in their own tag so -D can
     # reapply them: command-line extras, else the ones parsed from the
