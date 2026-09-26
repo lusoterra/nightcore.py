@@ -9,7 +9,7 @@ _nightcore() {
         cword=$COMP_CWORD
     }
 
-    local opts="-s --speed -r --reciprocal -R --resample -B --both -F --format -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run -y --overwrite -h --help"
+    local opts="-s --speed -r --reciprocal -y --overwrite -q --quiet -R --resample -B --both -F --format --lossy-opts= --batch -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run --simple-title --tag-template --cover --rb-params= -h --help"
 
     case "$prev" in
         -s|--speed)
@@ -23,18 +23,60 @@ _nightcore() {
             return 0
             ;;
         -F|--format)
-            COMPREPLY=($(compgen -W "flac alac wav" -- "$cur"))
+            COMPREPLY=($(compgen -W "flac alac wav mp3 opus aac" -- "$cur"))
+            return 0
+            ;;
+        --tag-template)
+            COMPREPLY=($(compgen -f -- "$cur"))
+            return 0
+            ;;
+        --cover)
+            _filedir '@(png|jpg|jpeg|PNG|JPG|JPEG)'
+            return 0
+            ;;
+        --lossy-opts|--rb-params|--lossy-opts=*|--rb-params=*)
+            # Free-form encoder/rubberband flags: no completion
+            # (values starting with - need the --opt="..." form)
+            return 0
+            ;;
+        --simple-title)
+            # Free-form title suffix: no completion
+            return 0
+            ;;
+        =)
+            # Bash splits --opt=value at '=': stay out of the value.
+            case "${words[cword-2]:-}" in
+                --lossy-opts|--rb-params)
+                    return 0
+                    ;;
+            esac
+            ;;
+        --batch)
+            COMPREPLY=($(compgen -d -- "$cur"))
+            return 0
+            ;;
+    esac
+
+    case "$cur" in
+        --lossy-opts=*|--rb-params=*)
+            # Unsplittable --opt="..." form: free-form value, no completion.
             return 0
             ;;
     esac
 
     if [[ "$cur" == -* ]]; then
         COMPREPLY=($(compgen -W "$opts" -- "$cur"))
+        if ((${#COMPREPLY[@]} == 1)) && [[ ${COMPREPLY[0]} == *= ]]; then
+            # Complete --opt= with no trailing space, so the value
+            # starts right after '=' (the space form does not work
+            # for values starting with '-').
+            compopt +o nospace 2>/dev/null || true
+        fi
         return 0
     fi
 
     # Complete audio files for the positional input argument
-    _filedir '@(flac|wav|aiff|aif|ape|wv|tta|alac|m4a|mp3|ogg|oga|opus|aac|wma|mpc|ac3|dts|amr|speex|mp2)'
+    _filedir '@(flac|wav|aiff|aif|ape|wv|tta|alac|m4a|mp3|ogg|oga|opus|aac|wma|mpc|ac3|dts|amr|speex|mp2|lrc)'
 }
 complete -F _nightcore nightcore
 complete -F _nightcore nightcore.py
