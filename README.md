@@ -3,6 +3,8 @@
 This is a ~~simple~~ wrapper that creates bit-perfect Nightcore by altering the
 audio to change speed/pitch file using FFmpeg, SoX and rubberband.
 
+[![asciicast](https://asciinema.org/a/UqwG1b66mSsPeLCk.svg)](https://asciinema.org/a/UqwG1b66mSsPeLCk)
+
 Lots of autism went into this to make the most pristine Nightcore possible using
 state-of-the-art, modern audio processing tools.
 
@@ -10,6 +12,8 @@ SoX is used for resampling stages, rubberband for pitch-changing stages and
 FFmpeg as a general tool for everything else.
 
 Most of the flags here should cover 99% of all Nightcore tracks from the 2000s.
+
+## Some stuff you can do with this script:
 
 - Speed songs up or slow them down bit-perfectly (-s 1.2) - pitch and tempo move together, this is the classic Nightcore effect
 - Resample to player-safe rates with -R ([88.2kHz], [96kHz]...), or keep both copies with -B/-BR
@@ -102,20 +106,6 @@ for a walkthrough), then:
 nightcore --pitch-diff 54 63        # 2.6687090560373763st, speed 1.1666666666666667x
 nightcore song.flac -S 2.6687090560373763 -p -y   # remake it: song [2.6687090560373763st].flac
 nightcore song.flac -s 1.2 -S 2.166866948 -y  # both: song [1.2x 2.166866948st].flac
-```
-
-### Retiming LRC lyrics
-
-Point it at an `.lrc` file with `-s` and every timestamp (plus the
-`[length:]` header) is scaled by 1/speed to match the sped-up audio.
-The lyrics follow their parent audio file: alongside `song.flac` the
-output takes the audio's output name (`Artist - Title [1.2x].lrc`), so
-players pick it up automatically. Without a same-stem audio file next
-to it you get a plain `song [1.2x].lrc` copy. Only `-s` (and `-r`)
-change lyrics; the other flags just shape the mirrored name:
-
-```
-nightcore song.lrc -s 1.2 -y
 ```
 
 ## Transparent lossy settings
