@@ -34,7 +34,8 @@ Speed factor (1.2 = 20% faster). Default 1.0. Given an \fB.lrc\fR lyrics
 file instead of audio, every timestamp (and the \fI[length:]\fR header)
 is scaled by 1/\fISPEED\fR; the lyrics mirror the parent audio's output
 name (same stem, \fB.lrc\fR extension), falling back to \fIsong
-[1.2x].lrc\fR without a same-stem audio file. Only \fB-s\fR and
+[1.2x].lrc\fR without a same-stem audio file. At speed 1 the lyrics
+are copied byte-identical under the mirrored name. Only \fB-s\fR and
 \fB-r\fR change lyrics; the rest only shape the mirrored name.
 .TP
 .B -r, --reciprocal
@@ -99,7 +100,8 @@ may span lines). Empty or bare values keep the source tag; tags missing
 from the file are stripped from outputs. The computed title suffix is
 still appended. Template \fIcomment\fR lands in COMMENT (ffmpeg alone
 would file it as DESCRIPTION) and \fIencoder\fR stubs are honored on
-FLAC; muxer-written encoder tags are stripped by default.
+FLAC; muxer-written encoder tags are stripped by default (lossy outputs
+without a template keep the encoder's own tags instead).
 .TP
 .B --cover \fIIMG\fR
 PNG/JPG artwork to use as the sole attached picture of outputs (only wav

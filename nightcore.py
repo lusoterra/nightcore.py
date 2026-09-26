@@ -909,12 +909,15 @@ def find_parent_audio(lrc_path):
 
 
 def run_lrc(args, input_path, out_dir, ctx):
-    """Retime-only .lrc lyrics job: scale timestamps, write a suffixed copy.
+    """Retime .lrc lyrics (or copy them at speed 1), next to the music.
 
-    Only -s (and -r, which folds into it) applies to lyrics; everything
-    else is rejected loudly instead of silently ignored. Output is
-    "stem [1.2x].lrc" next to the input (or under the batch out_dir),
-    so one source can feed several sped-up audios.
+    With -s the timestamps scale by 1/speed; at speed 1 (plain
+    transcoding, e.g. a --batch sharing run) the file is copied
+    byte-identical. Either way the output mirrors the parent audio's
+    output name (same stem, .lrc), falling back to "stem [Nx].lrc" --
+    or the bare stem at speed 1 -- without a same-stem parent file.
+    Only -s (and -r, which folds into it) changes lyrics; -D/-p/-S are
+    rejected loudly instead of silently ignored.
     Returns a process-style exit code.
     """
     speed = ctx["speed"]
@@ -931,17 +934,18 @@ def run_lrc(args, input_path, out_dir, ctx):
     # --rb-params, --lossy-opts) is accepted for naming fidelity: the
     # lyrics mirror the parent audio's output name, which those flags
     # shape. They change nothing about the lyrics themselves.
-    if speed == 1.0:
-        print("Error: nothing to do (speed is 1, .lrc needs -s to retime)",
-              file=sys.stderr)
-        return 1
+    copy_only = speed == 1.0
     stem = predict_audio_stem(args, ctx, find_parent_audio(input_path))
     if stem is None:
         # No same-stem parent audio (or unreadable): fall back to the
-        # plain shift-suffixed name.
-        stem = sanitize_filename(f"{input_path.stem} [{speed!r}x]")
+        # input stem, shift-suffixed when retiming.
+        stem = (sanitize_filename(input_path.stem) if copy_only else
+                sanitize_filename(f"{input_path.stem} [{speed!r}x]"))
     output_path = ((out_dir if out_dir is not None else input_path.parent)
                    / (stem + ".lrc"))
+    if output_path == input_path:
+        print("Error: output would overwrite input, aborting", file=sys.stderr)
+        return 1
     if args.dry_run:
         print(output_path)
         return 0
@@ -956,6 +960,30 @@ def run_lrc(args, input_path, out_dir, ctx):
             file=sys.stderr,
         )
         return 1
+
+    if copy_only:
+        # Already timed right (speed-1 transcode run): byte-identical
+        # copy under the mirrored name.
+        try:
+            raw = input_path.read_bytes()
+        except OSError as e:
+            print(f"Error: cannot read {input_path}: {e}", file=sys.stderr)
+            return 1
+        tmpname = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=str(output_path.parent),
+                    prefix=".nightcore-", suffix=".lrc",
+                    delete=False) as f:
+                f.write(raw)
+                tmpname = f.name
+            Path(tmpname).replace(output_path)
+        except OSError as e:
+            if tmpname is not None:
+                Path(tmpname).unlink(missing_ok=True)
+            print(f"Error: cannot write {output_path}: {e}", file=sys.stderr)
+            return 1
+        return 0
 
     try:
         raw = input_path.read_bytes()
@@ -1629,7 +1657,7 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
                metadata_from=None, sample_fmt=None, with_cover=False,
                cover_file=None, strip_tags=False, extra_tags=None,
                ffmpeg_args=None, drop_video=False, drop_tags=None,
-               dither=None):
+               dither=None, bitexact=True):
     """Run one ffmpeg transcode; raises CalledProcessError on failure.
 
     metadata_from: optional extra input whose global metadata is mapped
@@ -1650,6 +1678,9 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
     dither: integer depth ("s16"/"s24"/"s32") to triangular-dither to
     on int encodes of processed (fractional) audio; None leaves direct
     bit-perfect paths undithered.
+    bitexact: suppress the muxer's own encoder/version tags (lossless
+    default; lossy outputs keep the encoder's tags unless a template
+    curates every tag).
     """
     ffmpeg_cmd = [
         "ffmpeg",
@@ -1721,12 +1752,13 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
     ffmpeg_cmd += list(ffmpeg_args or [])
     ffmpeg_cmd += [
         "-metadata", f"title={title}",
+    ]
+    if bitexact:
         # Bitexact output: the muxer writes no encoder/version tags of its
         # own, so stripped tags stay stripped (a template `encoder` entry
         # still applies, as do all explicit -metadata values above).
-        "-fflags", "+bitexact",
-        str(output_path)
-    ]
+        ffmpeg_cmd += ["-fflags", "+bitexact"]
+    ffmpeg_cmd += [str(output_path)]
     run_tool(ffmpeg_cmd)
 
 
@@ -2219,11 +2251,10 @@ def run_conversion(args, input_path, out_dir, ctx):
         extra_tags = ff_extra if tmpl is not None else {}
         if not tmpl and be_kind == "opusenc":
             # opusenc tags natively (ffmpeg can't write opus pictures),
-            # so it needs source tags up front like qaac always did.
-            # (albumartist is stored as album_artist by ffmpeg: ask both)
-            extra_tags = read_tags(input_path, "album", "genre", "date",
-                                   "track", "compilation", "albumartist",
-                                   "album_artist")
+            # so it needs the full source tag set up front: the rebuilt
+            # comments below must not lose anything --discard-comments
+            # cleared from the temp wav.
+            extra_tags, _ = read_all_tags(input_path)
         # Final-encode triple for ffmpeg-backed outputs: (codec, extra
         # ffmpeg args, forced depth). Lossy+ffmpeg passes only the user's
         # --lossy-opts and skips depth forcing (encoders manage it);
@@ -2242,7 +2273,7 @@ def run_conversion(args, input_path, out_dir, ctx):
 
         def finalize_ffmpeg(wav_path, final_path, title, codec, sample_fmt,
                             ffmpeg_args=None, drop_video=False,
-                            drop_tags=None, dither=None):
+                            drop_tags=None, dither=None, bitexact=True):
             run_ffmpeg(wav_path, final_path, None, codec, title,
                        overwrite=args.overwrite,
                        metadata_from=meta_src,
@@ -2255,7 +2286,8 @@ def run_conversion(args, input_path, out_dir, ctx):
                        ffmpeg_args=ffmpeg_args,
                        drop_video=drop_video,
                        drop_tags=drop_tags,
-                       dither=dither)
+                       dither=dither,
+                       bitexact=bitexact)
             normalize_cover(final_path)
 
         def normalize_cover(final_path):
@@ -2288,8 +2320,10 @@ def run_conversion(args, input_path, out_dir, ctx):
             run_qaac_alac(wav_path, qtmp, alac=alac, extra_args=extra_args)
             # Tags and cover art go through ffmpeg, never qaac. AAC is
             # lossy: drop stale source encoder tags (ALAC keeps them).
+            # Lossy keeps the encoder's own tags unless templated.
             finalize_ffmpeg(qtmp, final_path, title, "copy", None,
-                            drop_tags=None if alac else STALE_TAGS)
+                            drop_tags=None if alac else STALE_TAGS,
+                            bitexact=tmpl is not None or alac)
 
         def finalize_lame(wav_path, final_path, title):
             ltmp = temp_file("mp3")
@@ -2297,14 +2331,26 @@ def run_conversion(args, input_path, out_dir, ctx):
             run_lame(wav_path, ltmp, lossy_opts)
             # Tags and cover art go through ffmpeg, never lame.
             finalize_ffmpeg(ltmp, final_path, title, "copy", None,
-                            drop_tags=STALE_TAGS)
+                            drop_tags=STALE_TAGS,
+                            bitexact=tmpl is not None)
 
         def opus_tags_for(title):
             if tmpl is not None:
                 tags = {str(k).lower(): v for k, v in ff_extra.items()
                         if str(k).lower() != "encoder"}
             else:
-                tags = dict(extra_tags)
+                # Full source set, lowercased (opus comments are
+                # case-insensitive): title/artist are overridden below,
+                # stale source encoder tags describe the input, not this
+                # encode, and album_artist folds into albumartist.
+                tags = {str(k).lower(): v for k, v in extra_tags.items()}
+                tags.pop("encoder", None)
+                tags.pop("encoding_settings", None)
+                if ("album_artist" in tags
+                        and "albumartist" not in tags):
+                    tags["albumartist"] = tags.pop("album_artist")
+                else:
+                    tags.pop("album_artist", None)
                 if artist:
                     tags["artist"] = artist
             tags["title"] = title
@@ -2330,7 +2376,8 @@ def run_conversion(args, input_path, out_dir, ctx):
                             sample_fmt, ffmpeg_args=enc_args or None,
                             drop_video=drop,
                             drop_tags=STALE_TAGS if is_lossy_output else None,
-                            dither=dither)
+                            dither=dither,
+                            bitexact=tmpl is not None or not is_lossy_output)
 
         # Cover art: --cover wins outright; otherwise the original picture
         # is reused (extracted file for qaac/lame/opusenc, mapped stream
@@ -2514,7 +2561,8 @@ def run_conversion(args, input_path, out_dir, ctx):
                                    extra_tags=extra_tags or None,
                                    ffmpeg_args=enc_args,
                                    drop_video=(args.format == "opus"),
-                                   drop_tags=STALE_TAGS)
+                                   drop_tags=STALE_TAGS,
+                                   bitexact=tmpl is not None)
                         normalize_cover(output_path)
                     else:
                         ffmpeg_step(plan[1])
