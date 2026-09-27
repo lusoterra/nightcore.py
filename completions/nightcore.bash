@@ -9,7 +9,7 @@ _nightcore() {
         cword=$COMP_CWORD
     }
 
-    local opts="-s --speed -r --reciprocal -y --overwrite -q --quiet -R --resample -B --both -F --format --lossy-opts= --batch -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run --simple-title --tag-template --cover --rb-params= -h --help"
+    local opts="-s --speed -r --reciprocal -y --overwrite -q --quiet -R --resample -B --both -F --format --lossy-opts= --batch -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run --simple-title --autotag --autorename --tag-template --cover --rb-params= -h --help"
 
     case "$prev" in
         -s|--speed)
@@ -36,7 +36,7 @@ _nightcore() {
             ;;
         --lossy-opts|--rb-params|--lossy-opts=*|--rb-params=*)
             # Free-form encoder/rubberband flags: no completion
-            # (values starting with - need the --opt="..." form)
+            # (= form only: space-separated values are rejected)
             return 0
             ;;
         --simple-title)

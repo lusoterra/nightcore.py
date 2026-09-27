@@ -161,10 +161,10 @@ def parse_arguments():
         metavar="OPTS",
         help=(
             "REQUIRED for lossy outputs: encoder quality flags\n"
-            "(shlex-split, you choose, e.g. \"-q:a 0\" or \"--bitrate 128\").\n"
+            "(shlex-split, you choose, = form only, e.g.\n"
+            "--lossy-opts=\"-q:a 0\" or --lossy-opts=\"--bitrate 128\").\n"
             "Flag dialect picks the encoder: native-CLI style (-V,\n"
-            "--bitrate, ...) uses lame/opusenc/qaac, -X:a style uses ffmpeg\n"
-            "(use the = form: --lossy-opts=\"-q:a 0\")"
+            "--bitrate, ...) uses lame/opusenc/qaac, -X:a style uses ffmpeg"
         )
     )
 
@@ -213,7 +213,24 @@ def parse_arguments():
         metavar="TEXT",
         help="Keep the Title tag free of script-added [...] groups\n"
              "(filenames keep them); optional TEXT is appended after\n"
-             "a space, e.g. --simple-title=\"(Nightcore)\""
+             "a space, e.g. --simple-title=\"(Nightcore)\"\n"
+             "(bare flag goes last, or use --simple-title=)"
+    )
+
+    parser.add_argument(
+        "--autotag",
+        action="store_true",
+        default=False,
+        help="Append the bracket tags ([1.2x], rate, ...) to the Title tag\n"
+             "(default: leave Title as-is; --simple-title overrides this)"
+    )
+
+    parser.add_argument(
+        "--autorename",
+        action="store_true",
+        default=False,
+        help="Rename output to 'Artist - Title [tags]' from tags\n"
+             "(default: keep the input filename, append params)"
     )
 
     parser.add_argument(
@@ -279,6 +296,17 @@ def parse_arguments():
         )
     )
 
+    # --lossy-opts/--rb-params take values starting with "-" (encoder
+    # flags), which the space form would parse as nightcore's own options
+    # (-q:a 0 reads as -q). Only the = form is accepted; the space form
+    # fails here instead of misparsing.
+    for tok in sys.argv[1:]:
+        if tok in ("--lossy-opts", "--rb-params"):
+            ex = "--formant" if tok == "--rb-params" else "-q:a 0"
+            parser.error(
+                f"{tok} requires the = form "
+                f'(e.g. {tok}="{ex}"); space-separated values '
+                f"starting with - would parse as nightcore flags")
     return parser.parse_args()
 
 
@@ -1916,7 +1944,7 @@ def main():
                 hint = '"-V 91"' if kind == "qaac" else '"-b:a 128k"'
             print(f"Error: -F {args.format} via {tool} needs --lossy-opts "
                   f"(you choose the quality, no defaults), "
-                  f"e.g. --lossy-opts {hint}", file=sys.stderr)
+                  f"e.g. --lossy-opts={hint}", file=sys.stderr)
             return 1
 
     ctx = {
@@ -2167,19 +2195,22 @@ def run_conversion(args, input_path, out_dir, ctx):
         print("Warning: --rb-params has no effect without pitch "
               "(no pitch job in this run)", file=sys.stderr)
 
-    # Output filenames: "Artist - Title [speed|st] [<codec> <bitrate>k]
-    # [<rate>]<ext>" (artist prefix omitted when the source has no artist
-    # tag; "Title" is the embedded title, falling back to the filename).
-    # The Title tag is the same minus the artist prefix. Names are
-    # sanitized for Linux/Windows-safe filenames. Preserve input directory.
-    # -D instead strips shift/rate tags off the input's own name and title,
-    # keeping quality tags verbatim.
-    artist_prefix = f"{artist} - " if artist else ""
+    # Output filenames carry the params suffix ([speed|st] [<codec>
+    # <bitrate>k] [<rate>]) appended to a base. --autorename builds the
+    # base from tags ("Artist - Title", artist prefix omitted when the
+    # source has no artist tag); by default the base is the input's own
+    # stem. The Title tag follows --autotag/--simple-title, not this.
+    # Names are sanitized for Linux/Windows-safe filenames. Preserve
+    # input directory. -D instead strips shift/rate tags off the input's
+    # own name and title, keeping quality tags verbatim.
     if args.denightcore:
         original_title = split_shift_tags(original_title)[0]
         name_base = cleaned_stem
-    else:
+    elif args.autorename:
+        artist_prefix = f"{artist} - " if artist else ""
         name_base = artist_prefix + original_title
+    else:
+        name_base = input_path.stem
     outputs = [
         (
             suffix,
@@ -2510,11 +2541,15 @@ def run_conversion(args, input_path, out_dir, ctx):
 
             for ji, ((suffix, plan), (_, output_path)) in enumerate(
                     zip(jobs, outputs)):
-                new_title = original_title + suffix
-                if tmpl is not None and not title_base:
-                    new_title = new_title.lstrip()
                 if args.simple_title is not None:
-                    new_title = simple_title(new_title, args.simple_title)
+                    new_title = simple_title(original_title + suffix,
+                                             args.simple_title)
+                elif args.autotag:
+                    new_title = original_title + suffix
+                    if tmpl is not None and not title_base:
+                        new_title = new_title.lstrip()
+                else:
+                    new_title = original_title
                 kind = plan[0]
                 if kind == "direct":
                     desc = ("speedup" if plan[1] is not None else "convert")
@@ -2919,9 +2954,11 @@ def predict_audio_stem(args, ctx, audio_path):
               else naming["weird_suffix"])
     if args.denightcore:
         name_base = naming["cleaned_stem"]
-    else:
+    elif args.autorename:
         artist_prefix = f"{naming['artist']} - " if naming["artist"] else ""
         name_base = artist_prefix + naming["original_title"]
+    else:
+        name_base = Path(audio_path).stem
     return sanitize_filename(name_base + suffix)
 
 

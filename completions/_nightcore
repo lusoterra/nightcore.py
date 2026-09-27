@@ -30,6 +30,8 @@ _nightcore() {
         '-n[Print output filename(s) and exit without converting]' \
         '--dry-run[Print output filename(s) and exit without converting]' \
         '--simple-title+[Clean Title tag, optional suffix]: : ' \
+        '--autotag[Append bracket tags to the Title tag]' \
+        '--autorename[Rename output to Artist - Title from tags]' \
         '--tag-template+[Tag template file]:template:_files' \
         '--cover+[Cover artwork PNG/JPG]:image:_files -g "*.png *.jpg *.jpeg (#i)"' \
         '-y[Overwrite output file if it exists]' \
