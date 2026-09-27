@@ -44,43 +44,51 @@ Have all of these installed for the smoothest experience:
 ```
 usage: nightcore [-h] [-s SPEED] [-r] [-y] [-q] [-R] [-B] [-F FMT]
                     [--lossy-opts OPTS] [--batch [DIR]] [-p] [-S ST] [-n]
-                    [--simple-title [TEXT]] [--tag-template FILE]
-                    [--cover IMG] [--pitch-diff F [F ...]] [-D]
-                    [--speed-diff ST] [--rb-params PARAMS]
+                    [--simple-title [TEXT]] [--autotag] [--autorename]
+                    [--tag-template FILE] [--cover IMG]
+                    [--pitch-diff F [F ...]] [-D] [--speed-diff ST]
+                    [--rb-params PARAMS]
                     [input]
 
 Change audio speed/pitch using ffmpeg, sox and rubberband
 
 positional arguments:
-  input                   Input audio file (not needed for --pitch-diff/--speed-diff)
+  input                   Input audio file (not needed for --pitch-diff/--speed-diff;
+                          .lrc lyrics allowed with -s: retimed copy)
 
 options:
   -h, --help              show this help message and exit
   -s, --speed SPEED       Speed factor (1.2 = 20% faster, 0.8 = slower)
   -r, --reciprocal        Use 1/speed instead (undo a speedup)
   -y, --overwrite         Overwrite existing output files
-  -q, --quiet             Drop tool output but keep stage/progress lines
-                          (repeat as -qq for warnings and errors only;
-                          a failed tool's captured output always prints)
+  -q, --quiet             Drop tool output (-q keeps stage/progress lines, -qq keeps
+                          only warnings and errors; a failed tool's captured output
+                          always prints)
   -R, --resample          Resample to next standard rate via SoX
                           (default: keep non-standard rate, bit-perfect)
   -B, --both              With -R, also keep the non-standard-rate file
   -F, --format FMT        Output format: flac (default), alac, wav, mp3, opus, aac
   --lossy-opts OPTS       REQUIRED for lossy outputs: encoder quality flags
-                          (shlex-split, you choose, e.g. "-q:a 0" or "--bitrate 128").
+                          (shlex-split, you choose, = form only, e.g.
+                          --lossy-opts="-q:a 0" or --lossy-opts="--bitrate 128").
                           Flag dialect picks the encoder: native-CLI style (-V,
                           --bitrate, ...) uses lame/opusenc/qaac, -X:a style uses ffmpeg
-                          (use the = form: --lossy-opts="-q:a 0")
   --batch [DIR]           Convert every audio file in DIR (default: .) instead of
                           one input; outputs go to ./encodes/[format]/
-  -p, --pitch             Pitch-shift only, keep duration (needs rubberband)
+  -p, --pitch             Pitch-shift only, keep duration (needs rubberband;
+                          a modifier on -s/-S: the amount comes from there)
                           Labelled [Nst] full precision; negating reverses it
   -S, --semitones ST      Pitch-shift by ST semitones (alone: pitch-only;
                           with -s: speed+pitch combo like [1.2x 2.16st])
   -n, --dry-run           Print output names, convert nothing
-  --simple-title TEXT     Keep the Title tag free of script-added [...] groups
-                          (filenames keep them); optional TEXT is appended
-                          after a space, e.g. --simple-title="(Nightcore)"
+  --simple-title [TEXT]   Keep the Title tag free of script-added [...] groups
+                          (filenames keep them); optional TEXT is appended after
+                          a space, e.g. --simple-title="(Nightcore)"
+                          (bare flag goes last, or use --simple-title=)
+  --autotag               Append the bracket tags ([1.2x], rate, ...) to the Title tag
+                          (default: leave Title as-is; --simple-title overrides this)
+  --autorename            Rename output to 'Artist - Title [tags]' from tags
+                          (default: keep the input filename, append params)
   --tag-template FILE     Tag template file (key="value" lines, multiline ok).
                           Empty/bare values keep the source tag; tags missing
                           from the file are stripped from outputs.

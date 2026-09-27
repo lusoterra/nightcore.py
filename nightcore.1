@@ -92,7 +92,16 @@ Print output filename(s), convert nothing.
 .B --simple-title \fR[\fITEXT\fR]
 Keep the Title tag free of script-added \fI[...]\fR groups (filenames
 keep them); optional \fITEXT\fR is appended after a space, e.g.
-\fI--simple-title="(Nightcore)"\fR.
+\fI--simple-title="(Nightcore)"\fR. Bare \fI--simple-title\fR goes last
+or uses \fI=\fR, else it eats the input filename as its TEXT.
+.TP
+.B --autotag
+Append the bracket tags ([1.2x], rate, ...) to the Title tag
+(default: leave Title as-is; --simple-title overrides this).
+.TP
+.B --autorename
+Rename output to 'Artist - Title [tags]' from tags
+(default: keep the input filename, append params).
 .TP
 .B --tag-template \fIFILE\fR
 Apply a tag template file: one \fIkey="value"\fR entry per tag (values
@@ -110,14 +119,16 @@ cannot carry pictures; opus pictures go via opusenc).
 .B --lossy-opts \fIOPTS\fR
 REQUIRED for lossy outputs: encoder quality flags, shlex-split, you
 choose -- there are no defaults. The run fails loudly without it, naming
-an example for the selected encoder (e.g. \fI"-q:a 0"\fR for libmp3lame,
-\fI"--bitrate 128"\fR for opusenc, \fI"-V 91"\fR for qaac). The flag
+an example for the selected encoder (e.g. \fI--lossy-opts="-q:a 0"\fR
+for libmp3lame, \fI--lossy-opts="--bitrate 128"\fR for opusenc,
+\fI--lossy-opts="-V 91"\fR for qaac). The flag
 dialect picks the encoder: native-CLI style (\fI-V\fR, \fI--bitrate\fR,
 any \fI--long-opt\fR) uses lame/opusenc/qaac, \fI-X:a\fR style uses the
 ffmpeg encoder; mixing both is an error. A forced-but-missing encoder
 fails loudly instead of falling back. Ignored (with a warning) for
-lossless outputs. Values starting with \fB-\fR need the equals form:
-\fI--lossy-opts="-q:a 0"\fR.
+lossless outputs. Only the equals form is accepted: a space-separated
+value starting with \fB-\fR would parse as a nightcore flag, so it is
+rejected outright.
 .TP
 .B --batch \fR[\fIDIR\fR]
 Convert every audio file in \fIDIR\fR (default: .) instead of one input;
@@ -143,8 +154,10 @@ tags. Quality tags stay intact. Fails if no shift tags are found.
 Extra rubberband flags, appended after the defaults (\fB-3 -p \fIST\fR).
 A \fB-p\fR/\fB--pitch\fR inside overrides the pitch amount (warned about)
 instead of duplicating it. Recorded extras land in the filename as
-\fI[rb ...]\fR so -D inverts with them automatically. Values starting
-with \fB-\fR need the equals form: \fI--rb-params="--formant"\fR.
+\fI[rb ...]\fR so -D inverts with them automatically. Only the equals
+form is accepted: \fI--rb-params="--formant"\fR (a space-separated value
+starting with \fB-\fR would parse as a nightcore flag, so it is
+rejected outright).
 .TP
 .B --speed-diff \fIST\fR
 Calculator, no conversion: semitones to speed factor.
