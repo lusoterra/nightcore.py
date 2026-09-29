@@ -73,6 +73,19 @@ OUTPUT_FORMATS = {
     "aac": {"ext": ".m4a", "codec": "aac", "lossy": True},
 }
 
+# Lossy quality defaults per (format, backend kind): applied only when
+# the user passes no --lossy-opts, which then replaces them wholesale
+# (appending would hand qaac duplicate -V flags, which it rejects).
+# ffmpeg AAC has no default worth using: None fails loudly instead.
+LOSS_DEFAULTS = {
+    ("mp3", "ffmpeg"): ["-q:a", "0"],
+    ("mp3", "lame"): ["-V", "0"],
+    ("opus", "opusenc"): ["--bitrate", "128"],
+    ("opus", "ffmpeg"): ["-b:a", "128k"],
+    ("aac", "qaac"): ["-V", "91"],
+    ("aac", "ffmpeg"): None,
+}
+
 # Extensions scanned by --batch.
 AUDIO_EXTS = (".flac", ".wav", ".aiff", ".aif", ".ape", ".wv", ".tta",
               ".alac", ".m4a", ".mp3", ".ogg", ".oga", ".opus", ".aac",
@@ -346,45 +359,84 @@ def run_rubberband(input_wav, output_wav, semitones, extra_params):
     )
 
 
-def get_sample_rate(input_path):
+_probe_cache = {}
+_probe_no_ffprobe = False
+
+
+def probe_audio(path):
+    """Everything ffprobe knows about a file, in one pass (cached).
+
+    Returns {"audio": {...}, "video": [...], "format": {...},
+    "format_tags": {...}} with missing sections as {} / []. Results are
+    cached by path for the run: inputs are never rewritten mid-run
+    (conversion outputs land elsewhere, -N probes before replacing,
+    temps have unique paths), so one probe per file is enough. The
+    packet-level VBR scan and sox stats keep their own probes: those
+    read frames/samples, not stream metadata. Never raises.
+    """
+    key = str(path)
+    if key not in _probe_cache:
+        _probe_cache[key] = _probe_audio_uncached(path)
+    return _probe_cache[key]
+
+
+def _probe_audio_uncached(path):
+    empty = {"audio": {}, "video": [], "format": {}, "format_tags": {}}
     try:
-        ffprobe_cmd = [
-            "ffprobe",
-            "-v", "error",
-            "-select_streams", "a:0",
-            "-show_entries", "stream=sample_rate",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(input_path)
-        ]
-
         result = subprocess.run(
-            ffprobe_cmd,
-            capture_output=True,
-            text=True,
-            check=True
+            ["ffprobe", "-v", "error",
+             "-show_entries",
+             "stream=codec_type,codec_name,bit_rate,sample_fmt,"
+             "bits_per_raw_sample,sample_rate",
+             "-show_entries", "stream_tags",
+             "-show_entries", "format=bit_rate",
+             "-show_entries", "format_tags",
+             "-of", "json",
+             str(path)],
+            capture_output=True, text=True, check=True,
         )
-
-        # Take first line only: guards against multi-stream output
-        # (in case -select_streams is ignored by old ffprobe).
-        first_line = result.stdout.strip().splitlines()
-        if not first_line:
-            return None
-
-        try:
-            return int(first_line[0].strip())
-        except ValueError:
-            print(
-                f"Error: unexpected sample_rate from ffprobe: {first_line[0]!r}",
-                file=sys.stderr,
-            )
-            return None
-
     except subprocess.CalledProcessError as e:
         print("ffprobe failed:", (e.stderr or "").strip(), file=sys.stderr)
-        return None
+        return empty
+    except (FileNotFoundError, OSError):
+        global _probe_no_ffprobe
+        _probe_no_ffprobe = True
+        return empty
+    try:
+        info = json.loads(result.stdout or "{}")
+    except ValueError:
+        return empty
+    streams = [s for s in (info.get("streams") or [])
+               if isinstance(s, dict)]
+    fmt = info.get("format")
+    if not isinstance(fmt, dict):
+        fmt = {}
+    return {
+        "audio": next((s for s in streams
+                       if str(s.get("codec_type") or "").lower() == "audio"),
+                      {}),
+        "video": [s for s in streams
+                  if str(s.get("codec_type") or "").lower() == "video"],
+        "format": fmt,
+        "format_tags": fmt.get("tags") or {},
+    }
 
-    except FileNotFoundError:
-        print("Error: ffprobe not found. Is ffmpeg installed?", file=sys.stderr)
+
+def get_sample_rate(input_path):
+    raw = probe_audio(input_path)["audio"].get("sample_rate")
+    if raw is None:
+        if _probe_no_ffprobe:
+            print("Error: ffprobe not found. Is ffmpeg installed?",
+                  file=sys.stderr)
+        return None
+    text = str(raw).strip()
+    try:
+        return int(text)
+    except ValueError:
+        print(
+            f"Error: unexpected sample_rate from ffprobe: {text!r}",
+            file=sys.stderr,
+        )
         return None
 
 
@@ -516,59 +568,34 @@ def run_sox_rate(input_path, output_path, target):
 
 
 def get_audio_info(input_path):
-    """Return (codec_name, bit_rate_bps, bits_per_sample) for first audio stream.
+    """(codec, bit_rate, bits, format_bit_rate, raw_encoder) for audio.
 
-    codec_name is lowercased or None; bit_rate_bps is int or None (falls
-    back to the format bit_rate when the stream bit_rate is missing);
-    bits_per_sample is int or None (from bits_per_raw_sample, else mapped
-    from sample_fmt; None for float/unknown, e.g. lossy decodes).
+    codec is lowercased or None; bit_rate is int or None (falls back to
+    the format bit_rate when the stream bit_rate is missing); bits is
+    int or None (from bits_per_raw_sample, else mapped from sample_fmt;
+    None for float/unknown, e.g. lossy decodes).
     """
-    try:
-        ffprobe_cmd = [
-            "ffprobe",
-            "-v", "error",
-            "-select_streams", "a:0",
-            "-show_entries", "stream=codec_name,bit_rate,sample_fmt,bits_per_raw_sample",
-            "-show_entries", "stream_tags=encoder",
-            "-show_entries", "format=bit_rate",
-            "-show_entries", "format_tags=encoder",
-            "-of", "json",
-            str(input_path)
-        ]
+    probe = probe_audio(input_path)
+    stream = probe["audio"]
+    fmt = probe["format"]
+    fmt_tags = probe["format_tags"]
+    codec = stream.get("codec_name")
+    codec = str(codec).lower() if codec else None
 
-        result = subprocess.run(
-            ffprobe_cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
+    def _to_int(value):
+        try:
+            value = int(str(value).strip())
+        except (ValueError, AttributeError, TypeError):
+            return None
+        return value if value > 0 else None
 
-        info = json.loads(result.stdout or "{}")
-        streams = info.get("streams") or []
-        stream = streams[0] if streams else {}
-        fmt = info.get("format") or {}
+    bit_rate = _to_int(stream.get("bit_rate")) or _to_int(fmt.get("bit_rate"))
+    format_bit_rate = _to_int(fmt.get("bit_rate"))
 
-        codec = stream.get("codec_name")
-        codec = str(codec).lower() if codec else None
+    stream_tags = stream.get("tags") or {}
+    raw_encoder = stream_tags.get("encoder") or fmt_tags.get("encoder")
 
-        def _to_int(value):
-            try:
-                value = int(str(value).strip())
-            except (ValueError, AttributeError, TypeError):
-                return None
-            return value if value > 0 else None
-
-        bit_rate = _to_int(stream.get("bit_rate")) or _to_int(fmt.get("bit_rate"))
-        format_bit_rate = _to_int(fmt.get("bit_rate"))
-
-        stream_tags = stream.get("tags") or {}
-        fmt_tags = fmt.get("tags") or {}
-        raw_encoder = stream_tags.get("encoder") or fmt_tags.get("encoder")
-
-        return codec, bit_rate, bits_from_stream(stream), format_bit_rate, raw_encoder
-
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
-        return None, None, None, None, None
+    return codec, bit_rate, bits_from_stream(stream), format_bit_rate, raw_encoder
 
 
 def mp3_header_info(path):
@@ -1055,52 +1082,23 @@ def lossy_suffix_for(codec, bit_rate, mode=None, encoder=None):
 
 
 def read_tags(input_path, *names):
-    """Present format tags as {lowercased-name: stripped value}, one probe."""
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v", "error",
-                "-show_entries", f"format_tags={','.join(names)}",
-                "-of", "json",
-                str(input_path),
-            ],
-            capture_output=True, text=True, check=True,
-        )
-        tags = json.loads(result.stdout or "{}").get("format", {}).get("tags") or {}
-        return {
-            str(k).lower(): str(v).strip()
-            for k, v in tags.items()
-            if str(v).strip()
-        }
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
-        return {}
+    """Present format tags as {lowercased-name: stripped value}."""
+    wanted = {str(n).lower() for n in names}
+    tags = probe_audio(input_path)["format_tags"] or {}
+    return {
+        str(k).lower(): str(v).strip()
+        for k, v in tags.items()
+        if str(k).lower() in wanted and str(v).strip()
+    }
 
 
 def read_format_tag(input_path, tag):
     """Single format tag value (stripped), or None if missing/unreadable."""
-    try:
-        ffprobe_cmd = [
-            "ffprobe",
-            "-v", "error",
-            "-show_entries", f"format_tags={tag}",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(input_path)
-        ]
-
-        result = subprocess.run(
-            ffprobe_cmd,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-
-        value = result.stdout.strip()
-
-        return value if value else None
-
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return None
+    for k, v in (probe_audio(input_path)["format_tags"] or {}).items():
+        if str(k).lower() == str(tag).lower():
+            value = str(v).strip()
+            return value if value else None
+    return None
 
 
 def get_title(input_path, fallback):
@@ -1278,21 +1276,8 @@ _qaac_version = None
 
 def sample_is_float(path):
     """True if audio decodes as float (or the probe fails: convert anyway)."""
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v", "error",
-                "-select_streams", "a:0",
-                "-show_entries", "stream=sample_fmt",
-                "-of", "default=nw=1:nk=1",
-                str(path),
-            ],
-            capture_output=True, text=True, check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return True
-    fmt = (result.stdout or "").strip().lower()
+    fmt = str(probe_audio(path)["audio"].get("sample_fmt") or "")
+    fmt = fmt.strip().lower()
     return not fmt or fmt.startswith(("flt", "dbl"))
 
 
@@ -1547,22 +1532,8 @@ def run_qaac_alac(input_wav, output_m4a, alac=True, extra_args=()):
 
 def cover_codec_name(path):
     """Video codec of the first attached picture stream, or None."""
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v", "error",
-                "-select_streams", "v",
-                "-show_entries", "stream=codec_name",
-                "-of", "default=nw=1:nk=1",
-                str(path),
-            ],
-            capture_output=True, text=True, check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return None
-    for line in result.stdout.splitlines():
-        name = line.strip().lower()
+    for stream in probe_audio(path)["video"]:
+        name = str(stream.get("codec_name") or "").strip().lower()
         if name:
             return name
     return None
@@ -1728,37 +1699,64 @@ def describe_output_tags(tmpl, no_delete, ff_count, backend_kind, out_ext,
     return mode, cover
 
 
+def name_base_for(autorename, artist, original_title, fallback_stem):
+    """Output name stem: Artist - Title under --autorename (artist
+    prefix omitted without an artist tag), else the fallback stem
+    (input stem, or cleaned stem for -D)."""
+    if not autorename:
+        return fallback_stem
+    if artist:
+        return f"{artist} - " + original_title
+    return original_title
+
+
+def preview_output(output_path, title, mode, cover, note=""):
+    """One dry-run block: path, predicted title/tags/cover. Stdout."""
+    print(f"{output_path}{note}")
+    print(f"  title: {title}")
+    print(f"  tags: {mode}")
+    print(f"  cover: {cover}")
+
+
 def read_all_tags(input_path):
     """All format + first-audio-stream tags as (fmt_dict, stream_dict).
 
     Keys keep their original case; empty values are dropped. Returns
     ({}, {}) when unreadable. Never raises.
     """
+    probe = probe_audio(input_path)
+
+    def _clean(tags):
+        return {str(k): str(v) for k, v in (tags or {}).items()
+                if str(v) != ""}
+
+    return (_clean(probe["format_tags"]),
+            _clean(probe["audio"].get("tags")))
+
+
+def extract_cover_tmp(input_path, orig_cover, tempdir):
+    """Copy the attached picture to a temp image file; None on failure."""
     try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v", "error",
-                "-select_streams", "a:0",
-                "-show_entries", "format_tags",
-                "-show_entries", "stream_tags",
-                "-of", "json",
-                str(input_path),
-            ],
-            capture_output=True, text=True, check=True,
+        cover_tmp = tempdir / f"cover.{COVER_CODECS[orig_cover]}"
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y",
+             "-i", str(input_path),
+             "-map", "0:v", "-c", "copy", str(cover_tmp)],
+            check=True, capture_output=True,
         )
-        info = json.loads(result.stdout or "{}")
-        fmt = info.get("format") or {}
+        return cover_tmp
+    except (subprocess.CalledProcessError, OSError):
+        return None
 
-        def _clean(tags):
-            return {str(k): str(v) for k, v in (tags or {}).items()
-                    if str(v) != ""}
 
-        streams = info.get("streams") or []
-        stream = streams[0] if streams else {}
-        return _clean(fmt.get("tags")), _clean(stream.get("tags"))
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
-        return {}, {}
+def missing_metaflac():
+    """True (after printing the install error) when metaflac is absent."""
+    if shutil.which("metaflac") is None:
+        print("Error: metaflac not found (install flac); this FLAC "
+              "output needs Cover (front) / comment / encoder fixes",
+              file=sys.stderr)
+        return True
+    return False
 
 
 # Template key spellings some muxers don't store (movenc drops bare
@@ -1898,6 +1896,19 @@ def print_summary(ctx):
     print(f"Summary: {', '.join(parts)}")
     for r in records:
         print(f"  {r['name']}: {r['detail']}")
+
+
+def finish_batch(ctx, files, failed, ok_message):
+    """Shared batch tail: stash failures, report, summarize, exit code."""
+    ctx["failed"] = failed
+    if failed:
+        print(f"Error: {len(failed)} of {len(files)} file(s) failed: "
+              + ", ".join(failed), file=sys.stderr)
+        print_summary(ctx)
+        return 1
+    print(ok_message)
+    print_summary(ctx)
+    return 0
 
 
 def batch_op_dir(args, op, fmt=None):
@@ -2124,14 +2135,6 @@ def main():
     # user passes no --lossy-opts, which then replaces them wholesale
     # (appending would hand qaac duplicate -V flags, which it rejects).
     # ffmpeg AAC has no default worth using: it fails loudly instead.
-    LOSS_DEFAULTS = {
-        ("mp3", "ffmpeg"): ["-q:a", "0"],
-        ("mp3", "lame"): ["-V", "0"],
-        ("opus", "opusenc"): ["--bitrate", "128"],
-        ("opus", "ffmpeg"): ["-b:a", "128k"],
-        ("aac", "qaac"): ["-V", "91"],
-        ("aac", "ffmpeg"): None,
-    }
     backend = None
     if is_lossy_format and not retags:
         try:
@@ -2192,14 +2195,10 @@ def main():
                 if run_retag(args, candidate, op_base, ctx) != 0:
                     failed.append(candidate.name)
             ctx["failed"] = failed
-            if failed:
-                print(f"Error: {len(failed)} of {len(files)} file(s) "
-                      f"failed: " + ", ".join(failed), file=sys.stderr)
-            else:
-                verb = "Would retag" if args.dry_run else "Retagged"
-                print(f"{verb}: {len(files)} file(s) -> {op_base}")
-            print_summary(ctx)
-            return 1 if failed else 0
+            verb = "Would retag" if args.dry_run else "Retagged"
+            return finish_batch(
+                ctx, files, failed,
+                f"{verb}: {len(files)} file(s) -> {op_base}")
         if args.denightcore:
             # Denightcore batches land flat in ./denightcore/ (lossless
             # output is enforced in main, so nothing here resamples into
@@ -2219,19 +2218,14 @@ def main():
             if run_conversion(args, candidate, out_base, ctx) != 0:
                 failed.append(candidate.name)
         ctx["failed"] = failed
-        if failed:
-            print(f"Error: {len(failed)} of {len(files)} file(s) failed: "
-                  + ", ".join(failed), file=sys.stderr)
-            print_summary(ctx)
-            return 1
         verb = "Would convert" if args.dry_run else "Done"
         skipped = ctx.get("skipped", 0) + ctx.get("skipped_notags", 0)
         note = f" ({skipped} skipped)" if skipped else ""
         dest = (f"{out_base} + {std_base}"
                 if ctx.get("used_std") else str(out_base))
-        print(f"{verb}: {len(files)} file(s){note} -> {dest}")
-        print_summary(ctx)
-        return 0
+        return finish_batch(
+            ctx, files, failed,
+            f"{verb}: {len(files)} file(s){note} -> {dest}")
     if not args.input:
         print("Error: input file is required", file=sys.stderr)
         return 1
@@ -2452,11 +2446,9 @@ def run_conversion(args, input_path, out_dir, ctx):
     if args.denightcore:
         original_title = split_shift_tags(original_title)[0]
         name_base = cleaned_stem
-    elif args.autorename:
-        artist_prefix = f"{artist} - " if artist else ""
-        name_base = artist_prefix + original_title
     else:
-        name_base = input_path.stem
+        name_base = name_base_for(args.autorename, artist,
+                                  original_title, input_path.stem)
     parent = (out_dir if out_dir is not None
               else single_parent(args, input_path))
     std_dir = ctx.get("std_dir")
@@ -2498,7 +2490,6 @@ def run_conversion(args, input_path, out_dir, ctx):
     if args.dry_run:
         be = backend.get("kind") if backend else None
         for suffix, output_path in outputs:
-            print(output_path)
             title = compute_new_title(args, tmpl, title_base,
                                       original_title, suffix)
             flag_c = (cover_flag if (cover_flag is not None
@@ -2511,9 +2502,7 @@ def run_conversion(args, input_path, out_dir, ctx):
             mode, cover = describe_output_tags(
                 tmpl, args.no_delete_tags, len(ff_extra), be, out_ext,
                 flag_c, probe_c)
-            print(f"  title: {title}")
-            print(f"  tags: {mode}")
-            print(f"  cover: {cover}")
+            preview_output(output_path, title, mode, cover)
         return 0
 
     for suffix, output_path in outputs:
@@ -2727,10 +2716,7 @@ def run_conversion(args, input_path, out_dir, ctx):
                      and (flag_cover is not None or orig_cover is not None
                           or want_c is not None or want_d is not None
                           or stub_encoder is not None))
-        if need_meta and shutil.which("metaflac") is None:
-            print("Error: metaflac not found (install flac); this FLAC "
-                  "output needs Cover (front) / comment / encoder fixes",
-                  file=sys.stderr)
+        if need_meta and missing_metaflac():
             return 127
         norm_image, norm_mime = None, None
         if need_meta and flag_cover is not None:
@@ -2792,21 +2778,14 @@ def run_conversion(args, input_path, out_dir, ctx):
                                            for _, plan in jobs)))
             if (flag_cover is None and orig_cover is not None
                     and need_cover_file):
-                try:
-                    ext = COVER_CODECS[orig_cover]
-                    cover_tmp = tempdir / f"cover.{ext}"
-                    subprocess.run(
-                        ["ffmpeg", "-nostdin", "-y",
-                         "-i", str(input_path),
-                         "-map", "0:v", "-c", "copy", str(cover_tmp)],
-                        check=True, capture_output=True,
-                    )
-                    if norm_image is None and out_ext == ".flac":
-                        norm_image = cover_tmp
-                        norm_mime = ("image/jpeg" if ext == "jpg"
-                                     else "image/png")
-                except (subprocess.CalledProcessError, OSError):
-                    cover_tmp = None
+                cover_tmp = extract_cover_tmp(
+                    input_path, orig_cover, tempdir)
+                if (cover_tmp is not None and norm_image is None
+                        and out_ext == ".flac"):
+                    norm_image = cover_tmp
+                    norm_mime = ("image/jpeg"
+                                 if cover_tmp.suffix == ".jpg"
+                                 else "image/png")
 
             def conversion_detail():
                 # One-line summary of what this output did: encoder,
@@ -3084,11 +3063,8 @@ def run_retag(args, input_path, out_dir, ctx):
         # Same stale-quality-title rule as conversions.
         original_title = strip_quality_rate_tags(original_title)
     new_title = compute_new_title(args, tmpl, title_base, original_title, "")
-    if args.autorename:
-        artist_prefix = f"{artist} - " if artist else ""
-        name_base = artist_prefix + original_title
-    else:
-        name_base = stem
+    name_base = name_base_for(args.autorename, artist,
+                                original_title, stem)
     parent = (out_dir if out_dir is not None
               else single_parent(args, input_path))
     output_path = (parent
@@ -3125,11 +3101,9 @@ def run_retag(args, input_path, out_dir, ctx):
         tmpl, no_delete, len(ff_extra), None, out_ext,
         flag_cover, orig_cover)
     if args.dry_run:
-        print(f"{output_path}"
-              + (" (in place)" if output_path == input_path else ""))
-        print(f"  title: {new_title}")
-        print(f"  tags: {mode}")
-        print(f"  cover: {cover}")
+        preview_output(output_path, new_title, mode, cover,
+                       note=(" (in place)"
+                             if output_path == input_path else ""))
         return 0
     if output_path != input_path and output_path.exists() \
             and not args.overwrite:
@@ -3146,10 +3120,7 @@ def run_retag(args, input_path, out_dir, ctx):
                  and (flag_cover is not None or orig_cover is not None
                       or want_c is not None or want_d is not None
                       or stub_encoder is not None))
-    if need_meta and shutil.which("metaflac") is None:
-        print("Error: metaflac not found (install flac); this FLAC "
-              "output needs Cover (front) / comment / encoder fixes",
-              file=sys.stderr)
+    if need_meta and missing_metaflac():
         return 127
 
     map_cover = (flag_cover is None and orig_cover is not None
@@ -3160,17 +3131,8 @@ def run_retag(args, input_path, out_dir, ctx):
         cover_tmp = None
         if (flag_cover is None and orig_cover is not None
                 and out_ext != ".opus" and (need_meta or strip)):
-            ext = COVER_CODECS[orig_cover]
-            cover_tmp = tempdir / f"cover.{ext}"
-            try:
-                subprocess.run(
-                    ["ffmpeg", "-nostdin", "-y",
-                     "-i", str(input_path),
-                     "-map", "0:v", "-c", "copy", str(cover_tmp)],
-                    check=True, capture_output=True,
-                )
-            except (subprocess.CalledProcessError, OSError):
-                cover_tmp = None
+            cover_tmp = extract_cover_tmp(
+                input_path, orig_cover, tempdir)
         norm_image, norm_mime = None, None
         if need_meta:
             if flag_cover is not None:
@@ -3328,11 +3290,6 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
     else:
         mode_suffix = "" if speed == 1.0 else f" [{speed!r}x]"
     rate_suffix = f" [{format_rate(target_rate)}]" if target_rate is not None else ""
-    # Recorded rubberband extras ride along in their own tag so -D can
-    # reapply them: command-line extras, else the ones parsed from the
-    # filename (already stripped of any -p, whose value lives in [Nst]).
-    # Extras are only recorded when a pitch job actually runs; otherwise
-    # they had no effect and must not pollute the filename.
     # No rubberband extras exist (R3 defaults do everything): pitch jobs
     # run bare. split_shift_tags still strips legacy [rb ...] groups from
     # names so old files denightcore cleanly.
@@ -3435,11 +3392,10 @@ def predict_audio_stem(args, ctx, audio_path):
               else naming["weird_suffix"])
     if args.denightcore:
         name_base = naming["cleaned_stem"]
-    elif args.autorename:
-        artist_prefix = f"{naming['artist']} - " if naming["artist"] else ""
-        name_base = artist_prefix + naming["original_title"]
     else:
-        name_base = Path(audio_path).stem
+        name_base = name_base_for(args.autorename, naming["artist"],
+                                  naming["original_title"],
+                                  Path(audio_path).stem)
     return sanitize_filename(name_base + suffix)
 
 
