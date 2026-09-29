@@ -9,7 +9,7 @@ _nightcore() {
         cword=$COMP_CWORD
     }
 
-    local opts="-s --speed -r --reciprocal -y --overwrite -q --quiet -R --resample -B --both -F --format --lossy-opts= --batch -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run --simple-title --autotag --autorename --tag-template --cover --rb-params= -h --help"
+    local opts="-s --speed -r --reciprocal -y --overwrite -q --quiet -R --resample -B --both -F --format --lossy-opts= --batch -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run --simple-title --autotag --autorename -N --retag --renametag --no-delete-tags -o --output --output-folder --tag-template --cover -h --help"
 
     case "$prev" in
         -s|--speed)
@@ -34,8 +34,8 @@ _nightcore() {
             _filedir '@(png|jpg|jpeg|PNG|JPG|JPEG)'
             return 0
             ;;
-        --lossy-opts|--rb-params|--lossy-opts=*|--rb-params=*)
-            # Free-form encoder/rubberband flags: no completion
+        --lossy-opts|--lossy-opts=*)
+            # Free-form encoder flags: no completion
             # (= form only: space-separated values are rejected)
             return 0
             ;;
@@ -46,7 +46,7 @@ _nightcore() {
         =)
             # Bash splits --opt=value at '=': stay out of the value.
             case "${words[cword-2]:-}" in
-                --lossy-opts|--rb-params)
+                --lossy-opts)
                     return 0
                     ;;
             esac
@@ -58,7 +58,7 @@ _nightcore() {
     esac
 
     case "$cur" in
-        --lossy-opts=*|--rb-params=*)
+        --lossy-opts=*)
             # Unsplittable --opt="..." form: free-form value, no completion.
             return 0
             ;;
