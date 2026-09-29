@@ -24,7 +24,6 @@ _nightcore() {
         '--semitones+[Pitch-shift by semitones (implies pitch-only)]:semitones:(1.65 2.41 3.16 3.86 4.55)' \
         '--pitch-diff+[Pitch difference calculator]: :' \
         '--speed-diff+[Semitones to speed factor]: :' \
-        '--rb-params-[Extra rubberband flags (use --opt="...")]: : ' \
         '-D[Undo from filename tags: reads and removes Nx/Nst]' \
         '--denightcore[Undo from filename tags: reads and removes Nx/Nst]' \
         '-n[Print output filename(s) and exit without converting]' \
@@ -32,6 +31,13 @@ _nightcore() {
         '--simple-title+[Clean Title tag, optional suffix]: : ' \
         '--autotag[Append bracket tags to the Title tag]' \
         '--autorename[Rename output to Artist - Title from tags]' \
+        '-N[Retag mode: rewrite tags and rename in place]' \
+        '--retag[Retag mode: rewrite tags and rename]' \
+        '--renametag[Retag mode: rewrite tags and rename]' \
+        '-o+[Override the output filename]: :' \
+        '--output+[Override the output filename]: :' \
+        '--output-folder+[Base directory for batch folders]:dir:_files -/' \
+        '--no-delete-tags[With template: keep unlisted source tags]' \
         '--tag-template+[Tag template file]:template:_files' \
         '--cover+[Cover artwork PNG/JPG]:image:_files -g "*.png *.jpg *.jpeg (#i)"' \
         '-y[Overwrite output file if it exists]' \

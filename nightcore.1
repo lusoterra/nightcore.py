@@ -51,12 +51,15 @@ output always prints.
 .TP
 .B -R, --resample
 Resample to next standard rate via SoX. Default keeps the non-standard
-rate, bit-perfect.
+rate, bit-perfect. Cannot be used with lossy output (lossy encoders
+manage rates themselves; resample a lossless intermediate first).
+In batch mode the resampled file goes to
+\fI./std-samplerate/[format]/\fR (single-file runs stay alongside).
 .TP
 .B -B, --both
 With
 .BR -R ,
-also keep the non-standard-rate file.
+also keep the non-standard-rate file (which stays in \fI./encodes/\fR).
 .TP
 .B -F, --format \fIFMT\fR
 Output format: \fBflac\fR (default), \fBalac\fR, \fBwav\fR, \fBmp3\fR,
@@ -65,12 +68,13 @@ Automatic quality defaults exist only for lossless output, tuned for most
 compression (FLAC level 12; ALAC/WAV have no knobs). Lossy outputs prefer
 the best encoder -- MP3 via libmp3lame (lame CLI fallback), Opus via
 opusenc (ffmpeg libopus fallback), AAC via qaac (ffmpeg AAC fallback with
-a quality warning) -- but carry zero baked-in quality: \fB--lossy-opts\fR
-is mandatory, and rates are always passed through bit-perfect (\fB-R\fR/
-\fB--both\fR are ignored with a warning). If a
-weird rate is unacceptable the encoder itself fails loudly. Lossy files
-carry only the shift tag in filename and Title: no source-quality or rate
-tags. With a genuine \fBqaac\fR on PATH (verified via
+a quality warning) -- with quality defaults V0 (mp3), 128k (opus)
+and TVBR 91 (qaac); ffmpeg AAC has none and fails loudly unless explicit
+\fB--lossy-opts\fR are passed. User opts replace defaults wholesale.
+Rates always pass through untouched (\fB-R\fR/\fB--both\fR with lossy
+output is an error): if a weird rate is unacceptable the encoder itself
+fails loudly. Lossy files carry only the shift tag in filename and Title:
+no source-quality or rate tags. With a genuine \fBqaac\fR on PATH (verified via
 .IR "qaac --check" ,
 even under wine), ALAC/AAC encode with CoreAudio; otherwise ffmpeg's
 encoders are used.
@@ -103,11 +107,37 @@ Append the bracket tags ([1.2x], rate, ...) to the Title tag
 Rename output to 'Artist - Title [tags]' from tags
 (default: keep the input filename, append params).
 .TP
+.B -o, --output \fIFILE\fR
+Override the output filename (extension required, e.g. \fI-o mix.mp3\fR;
+used verbatim). Single-file runs only: \fI--batch\fR + \fI-o\fR and
+\fI--both\fR + \fI-o\fR are errors.
+.TP
+.B --output-folder \fIDIR\fR
+Base for batch folders (\fIencodes/denightcore/renametag/std-samplerate\fR).
+An existing \fIDIR\fR nests them (\fIDIR/encodes/[format]/...); a missing
+\fIDIR\fR takes the folder's place (\fIDIR/[format]/...). Single-file
+runs redirect their output into \fIDIR\fR instead.
+.TP
+.B -N, --retag, --renametag
+Retag mode: rewrite tags and rename via stream copy, with no audio
+processing. Each file keeps its container (\fI-F\fR is ignored).
+Batch copies land in \fI./renametag/\fR (originals stay); single-file
+renames land alongside (a rename moves: the original is removed).
+Names come from \fI--autorename\fR (Artist - Title) or the input stem,
+with no conversion params appended. Speed/pitch/resample flags
+(\fI-s -S -p -r -R -B -D\fR) are errors; a same-name
+rewrite goes through a temp file plus atomic replace. Opus pictures
+cannot be preserved without re-encoding, so those fail loudly.
+.TP
+.B --no-delete-tags
+With \fI--tag-template\fR: keep source tags not listed in the template
+(default: strip them, template only). Needs a template.
+.TP
 .B --tag-template \fIFILE\fR
 Apply a tag template file: one \fIkey="value"\fR entry per tag (values
 may span lines). Empty or bare values keep the source tag; tags missing
-from the file are stripped from outputs. The computed title suffix is
-still appended. Template \fIcomment\fR lands in COMMENT (ffmpeg alone
+from the file are stripped from outputs unless \fI--no-delete-tags\fR
+is given. The computed title suffix is still appended. Template \fIcomment\fR lands in COMMENT (ffmpeg alone
 would file it as DESCRIPTION) and \fIencoder\fR stubs are honored on
 FLAC; muxer-written encoder tags are stripped by default (lossy outputs
 without a template keep the encoder's own tags instead).
@@ -117,11 +147,10 @@ PNG/JPG artwork to use as the sole attached picture of outputs (only wav
 cannot carry pictures; opus pictures go via opusenc).
 .TP
 .B --lossy-opts \fIOPTS\fR
-REQUIRED for lossy outputs: encoder quality flags, shlex-split, you
-choose -- there are no defaults. The run fails loudly without it, naming
-an example for the selected encoder (e.g. \fI--lossy-opts="-q:a 0"\fR
-for libmp3lame, \fI--lossy-opts="--bitrate 128"\fR for opusenc,
-\fI--lossy-opts="-V 91"\fR for qaac). The flag
+Encoder quality flags (shlex-split, equals form only). Defaults: V0
+(mp3), 128k (opus), TVBR 91 (qaac); ffmpeg AAC has none and fails loudly
+unless explicit opts are passed (it isn't that great: install qaac).
+Your opts replace the defaults wholesale. The flag
 dialect picks the encoder: native-CLI style (\fI-V\fR, \fI--bitrate\fR,
 any \fI--long-opt\fR) uses lame/opusenc/qaac, \fI-X:a\fR style uses the
 ffmpeg encoder; mixing both is an error. A forced-but-missing encoder
@@ -133,7 +162,10 @@ rejected outright.
 .B --batch \fR[\fIDIR\fR]
 Convert every audio file in \fIDIR\fR (default: .) instead of one input;
 outputs go to \fI./encodes/[format]/\fR (relative to the current working
-directory). Tag-derived names can collide there (duplicate files, or
+directory; see \fI--output-folder\fR). Resampled (\fI-R\fR) lossless
+files go to \fI./std-samplerate/[format]/\fR instead, \fI-D\fR batches
+to flat \fI./denightcore/\fR (lossless output enforced), and \fI-N\fR
+batches copy to \fI./renametag/\fR. Tag-derived names can collide there (duplicate files, or
 lossy outputs with stripped quality tags): the first file keeps its
 name, later ones get \fI" (2)"\fR, \fI" (3)"\fR, ... appended.
 Reruns skip existing outputs (add files freely); \fB-y\fR re-encodes
@@ -148,16 +180,13 @@ frequencies (original, pitched). Prints semitones, cents, speed factor.
 .B -D, --denightcore
 Undo from filename tags: reads [Nx]/[Nst] shift tags (including combined
 forms like [1.2x 2.16st]), applies the inverse shift, and removes those
-tags. Quality tags stay intact. Fails if no shift tags are found.
-.TP
-.B --rb-params \fIPARAMS\fR
-Extra rubberband flags, appended after the defaults (\fB-3 -p \fIST\fR).
-A \fB-p\fR/\fB--pitch\fR inside overrides the pitch amount (warned about)
-instead of duplicating it. Recorded extras land in the filename as
-\fI[rb ...]\fR so -D inverts with them automatically. Only the equals
-form is accepted: \fI--rb-params="--formant"\fR (a space-separated value
-starting with \fB-\fR would parse as a nightcore flag, so it is
-rejected outright).
+tags. Quality tags stay intact. Fails if no shift tags are found (batch
+runs skip untagged files with a tally instead). Output must be lossless:
+lossy \fI-F\fR is rejected, so tracks never lose quality over time.
+Batch outputs land flat in \fI./denightcore/\fR. Each file reports its
+verdict: pure sample-rate undos are bit-perfect, while pitch inversion
+(rubberband), resampling (original rate unrecoverable), or a lossy
+source are called out with reasons.
 .TP
 .B --speed-diff \fIST\fR
 Calculator, no conversion: semitones to speed factor.
