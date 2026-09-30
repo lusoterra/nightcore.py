@@ -388,8 +388,8 @@ def _probe_audio_uncached(path):
         result = subprocess.run(
             ["ffprobe", "-v", "error",
              "-show_entries",
-             "stream=codec_type,codec_name,bit_rate,sample_fmt,"
-             "bits_per_raw_sample,sample_rate",
+             ("stream=codec_type,codec_name,bit_rate,sample_fmt,"
+              "bits_per_raw_sample,sample_rate"),
              "-show_entries", "stream_tags",
              "-show_entries", "format=bit_rate",
              "-show_entries", "format_tags",
@@ -538,9 +538,12 @@ def run_sox_rate(input_path, output_path, target):
     _active_proc = proc
     chunks = []
 
+    stderr = proc.stderr
+    assert stderr is not None
+
     def _pump():
         while True:
-            data = proc.stderr.read(65536)
+            data = stderr.read(65536)
             if not data:
                 break
             chunks.append(data)
@@ -1251,6 +1254,7 @@ def run_tool(cmd):
     else:
         proc = subprocess.Popen(cmd, start_new_session=True)
     _active_proc = proc
+    out = None
     try:
         if _quiet >= 1:
             out, _ = proc.communicate()
@@ -2543,6 +2547,10 @@ def run_conversion(args, input_path, out_dir, ctx):
     if args.denightcore:
         original_title = split_shift_tags(original_title)[0]
         name_base = cleaned_stem
+        if name_base is None:
+            print("Error: could not determine denightcored name",
+                  file=sys.stderr)
+            return 1
     else:
         name_base = name_base_for(args.autorename, artist,
                                   original_title, input_path.stem)
@@ -3175,7 +3183,7 @@ def run_renametag(args, input_path, out_dir, ctx):
             file=sys.stderr,
         )
         return 1
-    if lrc_dest is not None:
+    if lrc_src is not None and lrc_dest is not None:
         if lrc_dest.exists() and not args.overwrite:
             print(
                 f"Error: lyrics output already exists: {lrc_dest} "
@@ -3241,11 +3249,11 @@ def run_renametag(args, input_path, out_dir, ctx):
                    extra_tags=(ff_extra or None)
                    if tmpl is not None else None,
                    bitexact=True)
-        if need_meta:
-            if not flac_postprocess(final_path, norm_image, norm_mime,
-                                    want_c, want_d, stub_encoder):
-                print(f"Warning: metaflac fixes failed on {final_path}",
-                      file=sys.stderr)
+        if need_meta and not flac_postprocess(
+                final_path, norm_image, norm_mime,
+                want_c, want_d, stub_encoder):
+            print(f"Warning: metaflac fixes failed on {final_path}",
+                  file=sys.stderr)
         if same_path:
             os.replace(final_path, output_path)
         elif out_dir is None:
@@ -3381,7 +3389,7 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
         rate_suffix = ""
     weird_suffix = mode_suffix + middle_suffix
     standard_suffix = weird_suffix + rate_suffix
-    if args.denightcore:
+    if args.denightcore and denight is not None:
         # Output name comes from the stripped input name instead; only a
         # fresh rate tag is appended when resampling now.
         cleaned_stem = denight["cleaned_stem"]
@@ -3418,7 +3426,7 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
         # "[16bit 44.1kHz]" riding along in the source title must not
         # survive the transcode). Shift tags stay: only quality/rate go.
         original_title = strip_quality_rate_tags(original_title)
-        if args.denightcore:
+        if cleaned_stem is not None:
             cleaned_stem = strip_quality_rate_tags(cleaned_stem)
 
     return {
@@ -3471,6 +3479,8 @@ def predict_audio_stem(args, ctx, audio_path):
               else naming["weird_suffix"])
     if args.denightcore:
         name_base = naming["cleaned_stem"]
+        if name_base is None:
+            return None
     else:
         name_base = name_base_for(args.autorename, naming["artist"],
                                   naming["original_title"],
