@@ -148,15 +148,9 @@ def parse_arguments():
         default=False,
         help=(
             "Resample to next standard rate via SoX\n"
-            "(default: keep non-standard rate, bit-perfect)"
+            "(batch outputs to ./std-samplerate/[format]/;\n"
+            "default keeps the non-standard rate, bit-perfect)"
         )
-    )
-
-    parser.add_argument(
-        "-B", "--both",
-        action="store_true",
-        default=False,
-        help="With -R, also keep the non-standard-rate file"
     )
 
     parser.add_argument(
@@ -276,13 +270,21 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "-N", "--retag", "--renametag",
+        "--in-place",
         action="store_true",
         default=False,
-        help="Retag mode: rewrite tags and rename via stream copy,\n"
+        help="With -N --batch: renametag alongside the inputs instead of\n"
+             "copying to ./renametag/ (asks [y/N] first: originals move)"
+    )
+
+    parser.add_argument(
+        "-N", "--renametag",
+        action="store_true",
+        default=False,
+        help="Renametag mode: rewrite tags and rename via stream copy,\n"
              "no audio processing (batch copies to ./renametag/,\n"
              "single-file renames alongside). -F is ignored (container\n"
-             "kept); -s/-S/-p/-r/-R/-B/-D are errors"
+             "kept); -s/-S/-p/-r/-R/-D are errors"
     )
 
     parser.add_argument(
@@ -963,7 +965,7 @@ def run_lrc(args, input_path, out_dir, ctx):
         print("Error: -p/-S pitch shifting is not supported for .lrc "
               "lyrics (only -s retiming)", file=sys.stderr)
         return 1
-    # Everything else (-F, --tag-template, -R/--both, --cover,
+    # Everything else (-F, --tag-template, -R, --cover,
     # --lossy-opts) is accepted for naming fidelity: the
     # lyrics mirror the parent audio's output name, which those flags
     # shape. They change nothing about the lyrics themselves.
@@ -1212,6 +1214,14 @@ def say(msg):
     """Progress chatter for stderr; suppressed by -qq."""
     if _quiet < 2:
         print(msg, file=sys.stderr)
+
+
+def batch_prefix(ctx):
+    """'[i/N] ' file progress in batch mode, else ''."""
+    total = ctx.get("batch_total")
+    if not total:
+        return ""
+    return f"[{ctx.get('batch_index', 0) + 1}/{total}] "
 
 
 def _on_sigint(signum, frame):
@@ -1599,7 +1609,7 @@ def apply_template_tags(tmpl, input_path, original_title, artist,
 
     title_base/""/None rules, keep-source (bare value) lookups, muxer
     aliases and the effective-artist ride-along live here so conversions
-    and retag mode share them exactly. Never raises for missing tags.
+    and renametag mode share them exactly. Never raises for missing tags.
     keep_missing (--no-delete-tags): keys absent from the template keep
     their source values instead of being stripped (title_base falls back
     to the source title, artist to the source artist).
@@ -1710,9 +1720,9 @@ def name_base_for(autorename, artist, original_title, fallback_stem):
     return original_title
 
 
-def preview_output(output_path, title, mode, cover, note=""):
+def preview_output(output_path, title, mode, cover, note="", head=""):
     """One dry-run block: path, predicted title/tags/cover. Stdout."""
-    print(f"{output_path}{note}")
+    print(f"{head}{output_path}{note}")
     print(f"  title: {title}")
     print(f"  tags: {mode}")
     print(f"  cover: {cover}")
@@ -1874,28 +1884,26 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
 
 
 def print_summary(ctx):
-    """End-of-run tally + per-file lines (default and -q; never -qq)."""
+    """End-of-run tally (default and -q; never -qq). One line: per-file
+    detail already printed during the run, so it is not repeated."""
     if _quiet >= 2:
         return
-    records = ctx.get("records", [])
+    conv = ctx.get("converted", 0)
+    ret = ctx.get("renametagged", 0)
     skipped = ctx.get("skipped", 0) + ctx.get("skipped_notags", 0)
     failed = ctx.get("failed", [])
-    conv = sum(1 for r in records if r.get("kind") == "convert")
-    ret = sum(1 for r in records if r.get("kind") == "retag")
-    if not records and not skipped and not failed:
+    if not conv and not ret and not skipped and not failed:
         return
     parts = []
     if conv:
         parts.append(f"{conv} converted")
     if ret:
-        parts.append(f"{ret} retagged")
+        parts.append(f"{ret} renametagged")
     if skipped:
         parts.append(f"{skipped} skipped")
     if failed:
         parts.append(f"{len(failed)} failed")
     print(f"Summary: {', '.join(parts)}")
-    for r in records:
-        print(f"  {r['name']}: {r['detail']}")
 
 
 def finish_batch(ctx, files, failed, ok_message):
@@ -1911,11 +1919,86 @@ def finish_batch(ctx, files, failed, ok_message):
     return 0
 
 
+# Cover-art filenames (case-insensitive stem + image suffix) copied
+# alongside batch outputs so archived folders stay complete.
+COVER_ART_NAMES = {"cover", "folder", "front", "albumart", "artwork"}
+COVER_ART_EXTS = {".jpg", ".jpeg", ".png"}
+
+
+def copy_batch_art(batch_dir, dest_dirs, dry_run, overwrite):
+    """Copy cover art found in batch_dir into each dest dir.
+
+    Same exists rule as audio (missing copies, -y refreshes);
+    self-copies skipped. Returns copied (or would-copy) filenames.
+    Never raises.
+    """
+    try:
+        arts = sorted(p for p in batch_dir.iterdir()
+                      if p.is_file() and p.stem.lower() in COVER_ART_NAMES
+                      and p.suffix.lower() in COVER_ART_EXTS)
+    except OSError:
+        return []
+    done = []
+    for art in arts:
+        for d in dest_dirs:
+            dest = d / art.name
+            try:
+                if dest.resolve() == art.resolve():
+                    continue
+            except OSError:
+                pass
+            if dest.exists() and not overwrite:
+                continue
+            if dry_run:
+                print(f"Would copy {art.name} -> {dest}")
+            else:
+                try:
+                    shutil.copy2(art, dest)
+                except OSError as e:
+                    print(f"Warning: cannot copy art {art.name}: {e}",
+                          file=sys.stderr)
+                    continue
+                say(f"  art: {art.name} -> {dest}")
+            done.append(art.name)
+    return done
+
+
+def sweep_empty_dirs(args, batch_dir, dirs, dry_run):
+    """Remove batch op dirs (plus their auto-made parent shells) left
+    empty. Only empty dirs go: user paths (cwd, --output-folder, the
+    batch dir itself) and pre-existing content are never touched."""
+    if dry_run:
+        return
+    def _real(p):
+        try:
+            return Path(p).resolve()
+        except OSError:
+            return Path(p).absolute()
+
+    keep = {_real(Path.cwd())}
+    if args.output_folder is not None:
+        keep.add(_real(args.output_folder))
+    if batch_dir is not None:
+        keep.add(_real(batch_dir))
+    todo = []
+    for d in dirs:
+        d = Path(d)
+        todo.append(d)
+        if _real(d.parent) not in keep:
+            todo.append(d.parent)
+    for d in todo:
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+
+
 def batch_op_dir(args, op, fmt=None):
     """Directory for a batch operation folder, honoring --output-folder.
 
-    op is "encodes", "denightcore", "renametag" or "std-samplerate";
-    fmt appends the codec subfolder (encodes/std-samplerate only).
+    op is "encodes", "denightcore" or "renametag";
+    fmt appends the codec subfolder (encodes only: std-samplerate lives
+    flat inside it, denightcore/renametag take none).
     No --output-folder: ./<op>[/<fmt>]. Existing --output-folder dir X:
     X/<op>[/<fmt>]. Missing X: X[/<fmt>] itself (the leaf takes the op
     folder's place). Callers mkdir (except dry-run).
@@ -2061,23 +2144,24 @@ def main():
     if args.reciprocal:
         speed = 1 / speed
 
-    if args.both and not args.resample:
-        print("Error: --both requires -R/--resample", file=sys.stderr)
-        return 1
     if args.output is not None:
         if args.batch is not None:
             print("Error: -o/--output needs a single input "
                   "(no --batch: one name cannot fit many files)",
                   file=sys.stderr)
             return 1
-        if args.both:
-            print("Error: -o/--output cannot be combined with --both "
-                  "(two outputs, one name)", file=sys.stderr)
-            return 1
         if not Path(args.output).suffix:
             print("Error: -o/--output needs a file extension "
                   "(e.g. -o mix.mp3)", file=sys.stderr)
             return 1
+    if args.in_place and not args.renametag:
+        print("Error: --in-place needs -N/--renametag "
+              "(only renametagging works in place)", file=sys.stderr)
+        return 1
+    if args.in_place and args.output_folder is not None:
+        print("Error: --in-place cannot be combined with --output-folder "
+              "(in place means alongside the inputs)", file=sys.stderr)
+        return 1
     if args.output_folder is not None:
         od = Path(args.output_folder)
         if od.exists() and not od.is_dir():
@@ -2097,7 +2181,7 @@ def main():
         print("Warning: --lossy-opts ignored for lossless output",
               file=sys.stderr)
 
-    retags = args.retag
+    retags = args.renametag
     if retags:
         # Retagging rewrites tags+name only: anything that would change
         # audio is a loud error (a [1.2x] name on untouched audio lies).
@@ -2106,20 +2190,19 @@ def main():
                           ("-p/--pitch", args.pitch),
                           ("-r/--reciprocal", args.reciprocal),
                           ("-R/--resample", args.resample),
-                          ("-B/--both", args.both),
                           ("-D/--denightcore", args.denightcore)):
             if bad:
-                print(f"Error: -N/--retag cannot be combined with {flag} "
+                print(f"Error: -N/--renametag cannot be combined with {flag} "
                       "(no audio is processed)", file=sys.stderr)
                 return 1
         if args.format != "flac":
             print("Note: -N ignores -F (each file keeps its container)",
                   file=sys.stderr)
         if args.lossy_opts is not None:
-            print("Warning: --lossy-opts ignored in retag mode (no encoding)",
+            print("Warning: --lossy-opts ignored in renametag mode (no encoding)",
                   file=sys.stderr)
 
-    if (args.resample or args.both) and is_lossy_format:
+    if args.resample and is_lossy_format:
         print("Error: -R/--resample cannot be used with lossy output "
               "(lossy encoders manage rates themselves; resample a "
               "lossless intermediate first if you need a standard rate)",
@@ -2184,53 +2267,88 @@ def main():
             print(f"Error: no audio files in {batch_dir}", file=sys.stderr)
             return 1
         if retags:
-            # Batch retags go to ./renametag/ (copies; originals stay),
-            # never alongside: updating a whole folder in place invites
-            # bad surprises.
-            op_base = batch_op_dir(args, "renametag")
-            if not args.dry_run:
+            # Batch renametags copy to flat ./renametag/ (originals stay),
+            # or --in-place rewrites alongside the inputs (originals
+            # move: gated behind [y/N]). Lyrics files are not processed
+            # directly: each follows its audio master as a sidecar.
+            lyrics = [f for f in files if f.suffix.lower() == ".lrc"]
+            if lyrics:
+                print(f"Skipping {len(lyrics)} lyrics file(s) "
+                      "(they follow their audio masters as sidecars)",
+                      file=sys.stderr)
+                ctx["skipped"] = ctx.get("skipped", 0) + len(lyrics)
+                files = [f for f in files if f.suffix.lower() != ".lrc"]
+                if not files:
+                    print(f"Error: no audio files to renametag in {batch_dir}",
+                          file=sys.stderr)
+                    return 1
+            in_place = args.in_place and not args.dry_run
+            if in_place:
+                try:
+                    answer = input(
+                        f"Renametag {len(files)} file(s) in place in "
+                        f"{batch_dir}? Originals will be renamed and "
+                        f"overwritten. [y/N] ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    answer = ""
+                if answer != "y":
+                    print("Aborted.", file=sys.stderr)
+                    return 1
+            op_base = None if args.in_place else batch_op_dir(args, "renametag")
+            if op_base is not None and not args.dry_run:
                 op_base.mkdir(parents=True, exist_ok=True)
+            ctx["batch_total"] = len(files)
             failed = []
-            for candidate in files:
-                if run_retag(args, candidate, op_base, ctx) != 0:
+            for bi, candidate in enumerate(files):
+                ctx["batch_index"] = bi
+                if run_renametag(args, candidate, op_base, ctx) != 0:
                     failed.append(candidate.name)
             ctx["failed"] = failed
-            verb = "Would retag" if args.dry_run else "Retagged"
+            if op_base is not None:
+                copy_batch_art(batch_dir, [op_base], args.dry_run,
+                               args.overwrite)
+                sweep_empty_dirs(args, batch_dir, [op_base],
+                                 args.dry_run)
+            verb = "Would renametag" if args.dry_run else "Renametagged"
+            dest = (f"in place in {batch_dir}" if op_base is None
+                    else f"-> {op_base}")
+            skipped = ctx.get("skipped", 0)
+            note = f" ({skipped} skipped)" if skipped else ""
             return finish_batch(
                 ctx, files, failed,
-                f"{verb}: {len(files)} file(s) -> {op_base}")
-        if args.denightcore:
-            # Denightcore batches land flat in ./denightcore/ (lossless
-            # output is enforced in main, so nothing here resamples into
-            # std-samplerate).
-            out_base = batch_op_dir(args, "denightcore")
-            std_base = None
+                f"{verb}: {len(files)} file(s){note} {dest}")
+        if args.resample:
+            # -R means standard-rate-only output: everything lands in
+            # std-samplerate/[format]/, no weird-rate copies (batch or
+            # single). Lossless output is enforced in main.
+            out_base = batch_op_dir(args, "std-samplerate", args.format)
+        elif args.denightcore:
+            out_base = batch_op_dir(args, "denightcore", args.format)
         else:
             out_base = batch_op_dir(args, "encodes", args.format)
-            std_base = (batch_op_dir(args, "std-samplerate", args.format)
-                        if args.resample else None)
-        for d in {out_base} | ({std_base} if std_base is not None else set()):
-            if not args.dry_run:
-                d.mkdir(parents=True, exist_ok=True)
-        ctx["std_dir"] = std_base
+        if not args.dry_run:
+            out_base.mkdir(parents=True, exist_ok=True)
+        ctx["batch_total"] = len(files)
         failed = []
-        for candidate in files:
+        for bi, candidate in enumerate(files):
+            ctx["batch_index"] = bi
             if run_conversion(args, candidate, out_base, ctx) != 0:
                 failed.append(candidate.name)
         ctx["failed"] = failed
+        copy_batch_art(batch_dir, [out_base], args.dry_run,
+                       args.overwrite)
+        sweep_empty_dirs(args, batch_dir, [out_base], args.dry_run)
         verb = "Would convert" if args.dry_run else "Done"
         skipped = ctx.get("skipped", 0) + ctx.get("skipped_notags", 0)
         note = f" ({skipped} skipped)" if skipped else ""
-        dest = (f"{out_base} + {std_base}"
-                if ctx.get("used_std") else str(out_base))
         return finish_batch(
             ctx, files, failed,
-            f"{verb}: {len(files)} file(s){note} -> {dest}")
+            f"{verb}: {len(files)} file(s){note} -> {out_base}")
     if not args.input:
         print("Error: input file is required", file=sys.stderr)
         return 1
     if retags:
-        rc = run_retag(args, Path(args.input), None, ctx)
+        rc = run_renametag(args, Path(args.input), None, ctx)
     else:
         rc = run_conversion(args, Path(args.input), None, ctx)
     print_summary(ctx)
@@ -2335,15 +2453,6 @@ def run_conversion(args, input_path, out_dir, ctx):
         return 1
     # e.g. wav -> flac with speed 1: still convert to target format.
 
-    if args.both and target_rate is None and not is_lossy_output:
-        # Requested both outputs but resampling is a no-op (already a
-        # standard rate, or out of range): there is only one distinct file.
-        print(
-            "Warning: --both requested but resampling is a no-op; "
-            "generating only the weird-rate file.",
-            file=sys.stderr,
-        )
-
     def weird_filter():
         # Speedup is a pure rate reinterpretation: no resampling, ever.
         # (Resampling happens exclusively in SoX, only for -R outputs
@@ -2353,8 +2462,7 @@ def run_conversion(args, input_path, out_dir, ctx):
             return None
         return f"asetrate={sample_rate}*{speed}"
 
-    # Job list: (suffix, plan). --both emits the weird-rate file first,
-    # then the standard-rate file. Plans:
+    # Job list: (suffix, plan); exactly one job per file. Plans:
     #   ("direct", audio_filter)                        - ffmpeg only (weird speedup)
     #   ("resample", prefilter, target)                 - ffmpeg -> sox rate -> ffmpeg
     #   ("pitch", prefilter, pitched_rate, st, target, rb) - ffmpeg -> sox rate -> rubberband -> ffmpeg
@@ -2375,21 +2483,10 @@ def run_conversion(args, input_path, out_dir, ctx):
         # -D combined undo slows down first via asetrate; combo speeds up
         # first the same way (plain pitch jobs decode unfiltered).
         prefilter = weird_filter() if (args.denightcore or combo) else None
-        if args.both and target_rate is not None:
-            jobs = [
-                (weird_suffix, ("pitch", prefilter, pitched_rate, pitch_st, None, pitch_rb)),
-                (standard_suffix, ("pitch", prefilter, pitched_rate, pitch_st, target_rate, pitch_rb)),
-            ]
-        elif target_rate is not None:
+        if target_rate is not None:
             jobs = [(standard_suffix, ("pitch", prefilter, pitched_rate, pitch_st, target_rate, pitch_rb))]
         else:
             jobs = [(weird_suffix, ("pitch", prefilter, pitched_rate, pitch_st, None, pitch_rb))]
-    elif args.both and target_rate is not None:
-        jobs = [
-            (weird_suffix, ("direct", weird_filter())),
-            # Prefilter is speedup-only: SoX alone performs the resampling.
-            (standard_suffix, ("resample", weird_filter(), target_rate)),
-        ]
     elif target_rate is not None:
         jobs = [(standard_suffix, ("resample", weird_filter(), target_rate))]
     else:
@@ -2449,23 +2546,15 @@ def run_conversion(args, input_path, out_dir, ctx):
     else:
         name_base = name_base_for(args.autorename, artist,
                                   original_title, input_path.stem)
-    parent = (out_dir if out_dir is not None
-              else single_parent(args, input_path))
-    std_dir = ctx.get("std_dir")
+    if out_dir is not None:
+        parent = out_dir
+    else:
+        parent = single_parent(args, input_path)
     outputs = []
     for suffix, _ in jobs:
-        d = parent
-        if (out_dir is not None and std_dir is not None
-                and not args.denightcore and not is_lossy_output
-                and target_rate is not None
-                and suffix == standard_suffix):
-            # Batch -R: the standard-rate variant lives in
-            # std-samplerate/, the weird-rate one in encodes/.
-            d = std_dir
-            ctx["used_std"] = True
         outputs.append((
             suffix,
-            d / (sanitize_filename(name_base + suffix) + out_ext),
+            parent / (sanitize_filename(name_base + suffix) + out_ext),
         ))
 
     if out_dir is not None:
@@ -2477,8 +2566,8 @@ def run_conversion(args, input_path, out_dir, ctx):
                    for suffix, output_path in outputs]
 
     if args.output is not None and out_dir is None:
-        # -o overrides the computed name verbatim (batch+-o and --both
-        # are rejected in main, so exactly one job exists here).
+        # -o overrides the computed name verbatim (batch+-o is rejected
+        # in main, so exactly one job exists here).
         outputs = [(suffix, parent / args.output)
                    for suffix, _ in outputs]
 
@@ -2502,7 +2591,8 @@ def run_conversion(args, input_path, out_dir, ctx):
             mode, cover = describe_output_tags(
                 tmpl, args.no_delete_tags, len(ff_extra), be, out_ext,
                 flag_c, probe_c)
-            preview_output(output_path, title, mode, cover)
+            preview_output(output_path, title, mode, cover,
+                           head=batch_prefix(ctx))
         return 0
 
     for suffix, output_path in outputs:
@@ -2522,7 +2612,6 @@ def run_conversion(args, input_path, out_dir, ctx):
             return 1
 
     try:
-        total = len(jobs)
         # qaac (CoreAudio, often run via wine) encodes ALAC when present;
         # otherwise ffmpeg's alac encoder is used. qaac needs integer PCM.
         # AAC also prefers qaac (announced once in main); its fallback
@@ -2787,57 +2876,7 @@ def run_conversion(args, input_path, out_dir, ctx):
                                  if cover_tmp.suffix == ".jpg"
                                  else "image/png")
 
-            def conversion_detail():
-                # One-line summary of what this output did: encoder,
-                # rate path (bit-perfect only when nothing resampled a
-                # lossless file) and tag handling. Mirrors the branch
-                # logic above; recomputed from the plan, no extra probes.
-                if use_qaac:
-                    enc = ("qaac alac" if args.format == "alac"
-                           else f"qaac aac {' '.join(lossy_opts)}")
-                elif be_kind == "lame":
-                    enc = f"lame {' '.join(lossy_opts)}"
-                elif be_kind == "opusenc":
-                    enc = f"opusenc {' '.join(lossy_opts)}"
-                elif is_lossy_output:
-                    enc = f"{enc_codec} {' '.join(lossy_opts)}"
-                else:
-                    enc = enc_codec
-                weird = sample_rate * speed * combo_seq / d_seq
-                if kind == "direct":
-                    if plan[1] is None:
-                        rate = f"{sample_rate} Hz kept"
-                    else:
-                        rate = (f"{speed:g} -> {round(weird)} Hz, "
-                                f"no resample")
-                    if not is_lossy_output:
-                        rate += " (bit-perfect)"
-                elif kind == "resample":
-                    rate = f"SoX {round(weird)}->{plan[2]} Hz"
-                else:
-                    _, pre, pitched, pst, tgt, _ = plan
-                    cur0 = (round(sample_rate * speed)
-                            if pre is not None else sample_rate)
-                    parts = [f"rubberband {pst:+}st"]
-                    if pst >= 0:
-                        pre_to = tgt if tgt is not None else pitched
-                        if pre_to != cur0:
-                            parts.append(f"SoX prescale to {pre_to} Hz")
-                    else:
-                        settle = tgt if tgt is not None else pitched
-                        if settle != cur0:
-                            parts.append(f"SoX settle to {settle} Hz")
-                    rate = ", ".join(parts)
-                if tmpl is not None:
-                    tags = (f"template ({'keep' if no_delete else 'strip'})")
-                elif be_kind == "opusenc":
-                    tags = "source (native)"
-                else:
-                    tags = "source mapped"
-                return f"{enc}; {rate}; tags: {tags}"
-
-            for ji, ((suffix, plan), (_, output_path)) in enumerate(
-                    zip(jobs, outputs)):
+            for (suffix, plan), (_, output_path) in zip(jobs, outputs):
                 new_title = compute_new_title(args, tmpl, title_base,
                                                 original_title, suffix)
                 kind = plan[0]
@@ -2849,7 +2888,8 @@ def run_conversion(args, input_path, out_dir, ctx):
                     desc = f"pitch {plan[3]:+}st"
                     if plan[4] is not None:
                         desc += f" + resample to {format_rate(plan[4])}"
-                say(f"[{ji + 1}/{total}] {output_path.name}: {desc} "
+                head = batch_prefix(ctx)
+                say(f"{head}{output_path.name}: {desc} "
                     f"-> {args.format} via {enc_label}")
                 _active_outputs.add(output_path)
                 if kind == "direct":
@@ -2979,10 +3019,7 @@ def run_conversion(args, input_path, out_dir, ctx):
                     else:
                         finalize_wav(cur, output_path, new_title,
                                      enc_codec, enc_fmt)
-                ctx.setdefault("records", []).append({
-                    "kind": "convert",
-                    "name": output_path.name,
-                    "detail": conversion_detail()})
+                ctx["converted"] = ctx.get("converted", 0) + 1
                 _active_outputs.discard(output_path)
         finally:
             if tempdir is not None:
@@ -3019,7 +3056,7 @@ def run_conversion(args, input_path, out_dir, ctx):
 
 
 
-def run_retag(args, input_path, out_dir, ctx):
+def run_renametag(args, input_path, out_dir, ctx):
     """Rewrite tags and rename via stream copy (no audio work).
 
     The output keeps the input's container (-F is ignored) and lands in
@@ -3031,7 +3068,10 @@ def run_retag(args, input_path, out_dir, ctx):
     (suffix is empty: nothing was processed). Pictures are preserved by
     mapping, replaced by --cover; opus pictures are impossible through
     ffmpeg, so those fail loudly. Same-name rewrites go through a temp
-    file + atomic replace. Returns a process-style exit code.
+    file + atomic replace. Same-stem .lrc lyrics follow the master:
+    renamed (single/in-place) or copied (batch) next to the audio
+    output, before the audio itself moves. Returns a process-style
+    exit code.
     """
     tmpl = ctx["tmpl"]
     cover_flag = ctx["cover_flag"]
@@ -3042,7 +3082,7 @@ def run_retag(args, input_path, out_dir, ctx):
         print(f"Error: File not found: {input_path}", file=sys.stderr)
         return 1
     if input_path.suffix.lower() == ".lrc":
-        print("Error: -N/--retag needs audio "
+        print("Error: -N/--renametag needs audio "
               "(no tags to rewrite in .lrc)", file=sys.stderr)
         return 1
     out_ext = input_path.suffix.lower()
@@ -3074,6 +3114,22 @@ def run_retag(args, input_path, out_dir, ctx):
     if args.output is not None and out_dir is None:
         output_path = parent / args.output
 
+    # Lyrics sidecar follows the master: same-stem .lrc is renamed
+    # (single/in-place) or copied (batch) next to the audio output,
+    # before the audio itself moves (a failed audio step then heals
+    # on rerun: the sidecar is already where it belongs).
+    lrc_src = None
+    for ext in (".lrc", ".LRC"):
+        cand = input_path.with_name(input_path.stem + ext)
+        if cand.is_file():
+            lrc_src = cand
+            break
+    lrc_dest = None
+    if lrc_src is not None:
+        dest = output_path.with_name(
+            output_path.stem + lrc_src.suffix)
+        lrc_dest = dest if dest != lrc_src else None
+
     cover_ok = out_ext in COVER_FORMATS
     flag_cover = cover_flag if (cover_flag is not None
                                 and cover_ok) else None
@@ -3087,7 +3143,7 @@ def run_retag(args, input_path, out_dir, ctx):
             orig_cover = cc
     if out_ext == ".opus" and (flag_cover is not None
                                or orig_cover is not None):
-        print("Error: cannot retag opus pictures without re-encoding "
+        print("Error: cannot renametag opus pictures without re-encoding "
               "(ffmpeg writes no pictures to opus); encode a normal "
               "opus output instead", file=sys.stderr)
         return 1
@@ -3103,7 +3159,13 @@ def run_retag(args, input_path, out_dir, ctx):
     if args.dry_run:
         preview_output(output_path, new_title, mode, cover,
                        note=(" (in place)"
-                             if output_path == input_path else ""))
+                             if output_path == input_path else ""),
+                       head=batch_prefix(ctx))
+        if lrc_src is not None:
+            if lrc_dest is not None:
+                print(f"  lyrics: {lrc_src.name} -> {lrc_dest.name}")
+            else:
+                print(f"  lyrics: {lrc_src.name} (unchanged)")
         return 0
     if output_path != input_path and output_path.exists() \
             and not args.overwrite:
@@ -3113,6 +3175,23 @@ def run_retag(args, input_path, out_dir, ctx):
             file=sys.stderr,
         )
         return 1
+    if lrc_dest is not None:
+        if lrc_dest.exists() and not args.overwrite:
+            print(
+                f"Error: lyrics output already exists: {lrc_dest} "
+                "(use -y to overwrite)",
+                file=sys.stderr,
+            )
+            return 1
+        say(f"  lyrics: {lrc_src.name} -> {lrc_dest.name}")
+        try:
+            if out_dir is not None:
+                shutil.copy2(lrc_src, lrc_dest)
+            else:
+                os.replace(lrc_src, lrc_dest)
+        except OSError as e:
+            print(f"Error: cannot move lyrics: {e}", file=sys.stderr)
+            return 1
 
     want_c, want_d = flac_comment_wants(tmpl, ff_extra, input_path,
                                         out_ext, no_delete)
@@ -3126,7 +3205,11 @@ def run_retag(args, input_path, out_dir, ctx):
     map_cover = (flag_cover is None and orig_cover is not None
                  and out_ext != ".opus")
     meta_src = input_path if keep else None
-    tempdir = Path(tempfile.mkdtemp(prefix="nightcore-retag-"))
+    # Temp dir alongside the input: same-name rewrites finish with
+    # os.replace, which cannot cross filesystem boundaries (/tmp vs
+    # the library is the classic EXDEV case).
+    tempdir = Path(tempfile.mkdtemp(prefix="nightcore-renametag-",
+                                    dir=input_path.parent))
     try:
         cover_tmp = None
         if (flag_cover is None and orig_cover is not None
@@ -3143,9 +3226,9 @@ def run_retag(args, input_path, out_dir, ctx):
                 norm_mime = ("image/jpeg"
                              if cover_tmp.suffix == ".jpg"
                              else "image/png")
-        say(f"Retag {output_path.name} (stream copy)")
+        say(f"{batch_prefix(ctx)}Renametag {output_path.name} (stream copy)")
         same_path = (output_path == input_path)
-        final_path = (tempdir / f"retag{out_ext}"
+        final_path = (tempdir / f"renametag{out_ext}"
                       if same_path else output_path)
         _active_outputs.add(final_path)
         run_ffmpeg(input_path, final_path, None, "copy", new_title,
@@ -3170,11 +3253,7 @@ def run_retag(args, input_path, out_dir, ctx):
             # replacement is fully written (batch retags are copies).
             input_path.unlink()
         _active_outputs.discard(final_path)
-        ctx.setdefault("records", []).append({
-            "kind": "retag",
-            "name": output_path.name,
-            "detail": (f"stream copy; audio untouched; tags: {mode}; "
-                       f"cover: {cover}")})
+        ctx["renametagged"] = ctx.get("renametagged", 0) + 1
         return 0
     except subprocess.CalledProcessError as e:
         print(f"\nffmpeg failed with exit code {e.returncode}",
@@ -3372,7 +3451,7 @@ def predict_audio_stem(args, ctx, audio_path):
     Used by .lrc lyrics jobs so they follow their parent audio file
     with the same name. Returns the sanitized stem (no extension), or
     None when it cannot be determined (unreadable file, unknown rate).
-    Picks the resampled variant under --both, like the compatible file
+    Picks the resampled variant under -R, like the compatible file
     a player would actually pair with. Never prints, never raises.
     """
     if audio_path is None:

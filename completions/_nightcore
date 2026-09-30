@@ -12,8 +12,6 @@ _nightcore() {
         '--reciprocal[Use reciprocal of speed (1.2 becomes 1\/1.2)]' \
         '-R[Resample output to the next higher standard sample rate]' \
         '--resample[Resample output to the next higher standard sample rate]' \
-        '-B[With resampling, generate both the non-standard-rate and standard-rate files]' \
-        '--both[With resampling, generate both the non-standard-rate and standard-rate files]' \
         '-F+[Output format]:format:(flac alac wav mp3 opus aac)' \
         '--format+[Output format]:format:(flac alac wav mp3 opus aac)' \
         '--lossy-opts-[Extra lossy encoder flags (use --opt="...")]: : ' \
@@ -32,8 +30,8 @@ _nightcore() {
         '--autotag[Append bracket tags to the Title tag]' \
         '--autorename[Rename output to Artist - Title from tags]' \
         '-N[Retag mode: rewrite tags and rename in place]' \
-        '--retag[Retag mode: rewrite tags and rename]' \
         '--renametag[Retag mode: rewrite tags and rename]' \
+        '--in-place[With -N batch: renametag alongside inputs]' \
         '-o+[Override the output filename]: :' \
         '--output+[Override the output filename]: :' \
         '--output-folder+[Base directory for batch folders]:dir:_files -/' \

@@ -50,16 +50,13 @@ Drop tool output but keep stage/progress lines. Repeat as
 output always prints.
 .TP
 .B -R, --resample
-Resample to next standard rate via SoX. Default keeps the non-standard
-rate, bit-perfect. Cannot be used with lossy output (lossy encoders
-manage rates themselves; resample a lossless intermediate first).
-In batch mode the resampled file goes to
-\fI./std-samplerate/[format]/\fR (single-file runs stay alongside).
-.TP
-.B -B, --both
-With
-.BR -R ,
-also keep the non-standard-rate file (which stays in \fI./encodes/\fR).
+Resample to next standard rate via SoX (lossless output only).
+-R means standard-rate-only output to
+\fI./std-samplerate/[format]/\fR in batch mode (single-file runs
+resample in place, alongside the input); no weird-rate copy is kept. Default keeps the non-standard rate,
+bit-perfect, alongside the input. Cannot be used with lossy output
+(lossy encoders manage rates themselves; resample a lossless
+intermediate first).
 .TP
 .B -F, --format \fIFMT\fR
 Output format: \fBflac\fR (default), \fBalac\fR, \fBwav\fR, \fBmp3\fR,
@@ -113,19 +110,29 @@ used verbatim). Single-file runs only: \fI--batch\fR + \fI-o\fR and
 \fI--both\fR + \fI-o\fR are errors.
 .TP
 .B --output-folder \fIDIR\fR
-Base for batch folders (\fIencodes/denightcore/renametag/std-samplerate\fR).
+Base for batch folders (\fIencodes/denightcore/renametag/std-samplerate\fR,
+each with a \fI[format]/\fR subfolder except where noted).
 An existing \fIDIR\fR nests them (\fIDIR/encodes/[format]/...); a missing
 \fIDIR\fR takes the folder's place (\fIDIR/[format]/...). Single-file
 runs redirect their output into \fIDIR\fR instead.
 .TP
-.B -N, --retag, --renametag
-Retag mode: rewrite tags and rename via stream copy, with no audio
+.B --in-place
+With \fI-N --batch\fR: renametag alongside the inputs instead of
+copying to \fI./renametag/\fR. Asks \fI[y/N]\fR first (default no):
+originals move. Needs \fI-N\fR; cannot be combined with
+\fI--output-folder\fR.
+.TP
+.B -N, --renametag
+Renametag mode: rewrite tags and rename via stream copy, with no audio
 processing. Each file keeps its container (\fI-F\fR is ignored).
-Batch copies land in \fI./renametag/\fR (originals stay); single-file
+Batch copies land flat in \fI./renametag/\fR
+(originals stay); single-file
 renames land alongside (a rename moves: the original is removed).
+Same-stem .lrc lyrics follow their audio master (renamed or copied
+alongside it); batch .lrc entries are skipped as sidecar-driven.
 Names come from \fI--autorename\fR (Artist - Title) or the input stem,
 with no conversion params appended. Speed/pitch/resample flags
-(\fI-s -S -p -r -R -B -D\fR) are errors; a same-name
+(\fI-s -S -p -r -R -D\fR) are errors; a same-name
 rewrite goes through a temp file plus atomic replace. Opus pictures
 cannot be preserved without re-encoding, so those fail loudly.
 .TP
@@ -162,14 +169,18 @@ rejected outright.
 .B --batch \fR[\fIDIR\fR]
 Convert every audio file in \fIDIR\fR (default: .) instead of one input;
 outputs go to \fI./encodes/[format]/\fR (relative to the current working
-directory; see \fI--output-folder\fR). Resampled (\fI-R\fR) lossless
-files go to \fI./std-samplerate/[format]/\fR instead, \fI-D\fR batches
-to flat \fI./denightcore/\fR (lossless output enforced), and \fI-N\fR
-batches copy to \fI./renametag/\fR. Tag-derived names can collide there (duplicate files, or
+directory; see \fI--output-folder\fR). \fI-R\fR outputs (standard rate
+only) go to \fI./std-samplerate/[format]/\fR instead, \fI-D\fR batches
+to \fI./denightcore/[format]/\fR (lossless output enforced), and \fI-N\fR
+batches copy to flat \fI./renametag/\fR. Cover art
+found next to the inputs is copied alongside the audio. Folders left empty
+are removed. Tag-derived names can collide there (duplicate files, or
 lossy outputs with stripped quality tags): the first file keeps its
 name, later ones get \fI" (2)"\fR, \fI" (3)"\fR, ... appended.
 Reruns skip existing outputs (add files freely); \fB-y\fR re-encodes
-everything from scratch.
+everything from scratch. Cover art found next to the inputs
+(\fIcover.png\fR, \fIfolder.jpg\fR, ...) is copied alongside the
+outputs (same skip rules).
 \fB.lrc\fR lyrics files mirror their parent audio's output name
 (same stem, \fB.lrc\fR extension).
 .TP
@@ -183,7 +194,7 @@ forms like [1.2x 2.16st]), applies the inverse shift, and removes those
 tags. Quality tags stay intact. Fails if no shift tags are found (batch
 runs skip untagged files with a tally instead). Output must be lossless:
 lossy \fI-F\fR is rejected, so tracks never lose quality over time.
-Batch outputs land flat in \fI./denightcore/\fR. Each file reports its
+Batch outputs land in \fI./denightcore/[format]/\fR. Each file reports its
 verdict: pure sample-rate undos are bit-perfect, while pitch inversion
 (rubberband), resampling (original rate unrecoverable), or a lossy
 source are called out with reasons.
@@ -198,10 +209,10 @@ Speed up 20%:
 nightcore song.flac -s 1.2 -y
 .RE
 .PP
-Same plus a player-safe resampled copy:
+Same as a player-safe resampled copy:
 .PP
 .RS
-nightcore song.flac -s 1.2 -R -B -y
+nightcore song.flac -s 1.2 -R -y
 .RE
 .PP
 Pitch-only remake from measured semitones:
