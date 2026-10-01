@@ -1,11 +1,35 @@
+import re
 import sys
+from pathlib import Path
 
 import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # python < 3.11 without the tomli backport
+    tomllib = None
 
 from nightcore import __version__
 from nightcore.cli import parse_arguments
 from nightcore.constants import PROJECT_URL
 from nightcore.tags import tool_stamp
+
+
+def _pyproject_version():
+    """Expected version, read straight from pyproject.toml (no import)."""
+    root = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    if tomllib is not None:
+        with open(root, "rb") as handle:
+            return tomllib.load(handle)["project"]["version"]
+    for line in root.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"\s*version\s*=\s*[\"']([^\"']+)[\"']", line)
+        if match:
+            return match.group(1)
+    raise AssertionError("no version found in pyproject.toml")
+
+
+def test_version_matches_pyproject():
+    assert __version__ == _pyproject_version()
 
 
 def test_tool_stamp_format():

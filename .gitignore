@@ -5,3 +5,7 @@ build/
 *.egg-info/
 src/*.egg-info/
 *.flac
+/dist-release/
+/nightcore-*.tar.gz
+/nightcore-*.tar.gz.sha256
+/nightcore-*.tar.gz.sig
