@@ -1,0 +1,722 @@
+"""The speed/pitch conversion workflow."""
+
+from pathlib import Path
+from typing import Any
+import shutil
+import subprocess
+import sys
+import tempfile
+
+from .audio import cover_codec_name, extract_cover_tmp, format_rate, sample_is_float, semitones_from_speed, speed_from_semitones
+from .backends import find_qaac, flac_postprocess, missing_metaflac, run_ffmpeg, run_lame, run_opusenc, run_qaac_alac, run_rubberband, run_sox_rate, tame_hot_wav
+from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, OUTPUT_FORMATS, STALE_TAGS, _IMAGE_MIME
+from .lrc import run_lrc
+from .naming import claim_output_path, name_base_for, single_parent, split_shift_tags
+from .plan import resolve_audio_naming
+from .tags import compute_new_title, describe_output_tags, flac_comment_wants, read_all_tags, sanitize_filename
+from .util import _active_outputs, batch_prefix, preview_output, say
+
+def run_conversion(args, input_path, out_dir, ctx):
+    """Convert one file. out_dir overrides the output directory (batch).
+
+    ctx carries run-global values: tmpl, cover_flag, lossy_opts,
+    backend, speed, combo, st_signed, combo_seq,
+    eff_semitones.
+    Returns a process-style exit code.
+    """
+    tmpl = ctx["tmpl"]
+    cover_flag = ctx["cover_flag"]
+    lossy_opts = ctx["lossy_opts"]
+    backend = ctx["backend"]
+    speed = ctx["speed"]
+    combo = ctx["combo"]
+    st_signed = ctx["st_signed"]
+    combo_seq = ctx["combo_seq"]
+    eff_semitones = ctx["eff_semitones"]
+
+    input_path = Path(input_path)
+    if not input_path.is_file():
+        print(f"Error: File not found: {input_path}", file=sys.stderr)
+        return 1
+
+    if input_path.suffix.lower() == ".lrc":
+        return run_lrc(args, input_path, out_dir, ctx)
+
+    # -D reads the shift back out of the filename tags ([1.2x], [3.15st],
+    # combined [1.2x 2.16st]) instead of taking -s/-S/-p/-r.
+    d_speed, d_st, d_seq = 1.0, 0.0, 1.0
+    cleaned_stem = None
+    if args.denightcore:
+        for flag, bad in (("-s/--speed", args.speed != 1.0),
+                          ("-S/--semitones", eff_semitones is not None),
+                          ("-p/--pitch", args.pitch),
+                          ("-r/--reciprocal", args.reciprocal)):
+            if bad:
+                print(f"Error: --denightcore cannot be combined with {flag} "
+                      "(it reads the shift from filename tags)", file=sys.stderr)
+                return 1
+        cleaned_stem, d_speed, d_st, found, _ = split_shift_tags(
+            input_path.stem)
+        if not found:
+            if out_dir is not None:
+                # Batch denightcore: untagged files are skipped with a
+                # tally, not failed (a mixed folder shouldn't abort).
+                print(f"Skipping {input_path.name} "
+                      "(no shift tags for -D)", file=sys.stderr)
+                ctx["skipped_notags"] = ctx.get("skipped_notags", 0) + 1
+                return 0
+            print(f"Error: no [Nx] or [Nst] shift tags in '{input_path.name}'; "
+                  "--denightcore reads the amount from filename tags like "
+                  "[1.2x] or [3.15st], e.g. nightcore 'Song [1.2x].flac' -D",
+                  file=sys.stderr)
+            return 1
+        speed = 1.0 / d_speed
+        d_seq = speed_from_semitones(d_st)
+    naming = resolve_audio_naming(
+        args, tmpl, input_path, speed,
+        combo, st_signed, combo_seq, eff_semitones,
+        denight=(None if not args.denightcore else {
+            "d_speed": d_speed, "d_st": d_st, "d_seq": d_seq,
+            "cleaned_stem": cleaned_stem,
+        }))
+    if naming is None:
+        print("Error: could not determine input sample rate", file=sys.stderr)
+        return 1
+    speed = naming["speed"]
+    sample_rate = naming["sample_rate"]
+    target_rate = naming["target_rate"]
+    is_lossy_output = naming["is_lossy_output"]
+    bits = naming["bits"]
+    codec = naming["codec"]
+    pitch_mode = naming["pitch_mode"]
+    pitch_rb = naming["pitch_rb"]
+    weird_suffix = naming["weird_suffix"]
+    standard_suffix = naming["standard_suffix"]
+    cleaned_stem = naming["cleaned_stem"]
+    out_ext = naming["out_ext"]
+    out_codec = naming["out_codec"]
+    depth_fmt = naming["depth_fmt"]
+    depth_pcm = naming["depth_pcm"]
+    artist = naming["artist"]
+    original_title = naming["original_title"]
+    title_base = naming["title_base"]
+    ff_extra = naming["ff_extra"]
+    stub_encoder = naming["stub_encoder"]
+
+    if (not args.denightcore and not pitch_mode and speed == 1.0
+            and target_rate is None
+            and input_path.suffix.lower() == out_ext
+            and tmpl is None and cover_flag is None):
+        print(
+            "Error: nothing to do (speed is 1 and no resampling requested)",
+            file=sys.stderr,
+        )
+        return 1
+    # e.g. wav -> flac with speed 1: still convert to target format.
+
+    def weird_filter():
+        # Speedup is a pure rate reinterpretation: no resampling, ever.
+        # (Resampling happens exclusively in SoX, only for -R outputs
+        # and the pitch-subrecipe rate step.)
+        if speed == 1.0:
+            # Pure container/codec conversion (e.g. mp3 -> flac): no filter.
+            return None
+        return f"asetrate={sample_rate}*{speed}"
+
+    # Job list: (suffix, plan); exactly one job per file. Plans:
+    #   ("direct", audio_filter)                        - ffmpeg only (weird speedup)
+    #   ("resample", prefilter, target)                 - ffmpeg -> sox rate -> ffmpeg
+    #   ("pitch", prefilter, pitched_rate, st, target, rb) - ffmpeg -> sox rate -> rubberband -> ffmpeg
+    # Temp WAVs are f32 (exact for <=24-bit int and float32 sources).
+    jobs: list[tuple[str, Any]]
+    if pitch_mode:
+        # d_seq folds a -D pitch inversion into the same math (1.0 otherwise).
+        if combo:
+            pitch_st = st_signed
+        else:
+            pitch_st = (-d_st if args.denightcore and d_st != 0.0
+                        else semitones_from_speed(speed / d_seq))
+        # The SoX rate step always scales by the pitch factor from the
+        # post-prefilter rate: headroom for shifted highs, exact rate.
+        base_rate = (sample_rate * speed
+                     if (args.denightcore or combo) else sample_rate)
+        pitched_rate = round(base_rate * speed_from_semitones(pitch_st))
+        # -D combined undo slows down first via asetrate; combo speeds up
+        # first the same way (plain pitch jobs decode unfiltered).
+        prefilter = weird_filter() if (args.denightcore or combo) else None
+        if target_rate is not None:
+            jobs = [(standard_suffix, ("pitch", prefilter, pitched_rate, pitch_st, target_rate, pitch_rb))]
+        else:
+            jobs = [(weird_suffix, ("pitch", prefilter, pitched_rate, pitch_st, None, pitch_rb))]
+    elif target_rate is not None:
+        jobs = [(standard_suffix, ("resample", weird_filter(), target_rate))]
+    else:
+        jobs = [(weird_suffix, ("direct", weird_filter()))]
+
+    pitch_plans = [plan for _, plan in jobs if plan[0] == "pitch"]
+
+    def _needs_sox():
+        # Mirrors the executor below: SoX runs for every resample plan,
+        # for pitch-up pre-scales, and for pitch-down settles/targets.
+        for _, plan in jobs:
+            if plan[0] == "resample":
+                return True
+            if plan[0] == "pitch":
+                _, prefilter, pitched_rate, pitch_st, target, _ = plan
+                cur_rate = (round(sample_rate * speed)
+                            if prefilter is not None else sample_rate)
+                if pitch_st >= 0:
+                    prescale_to = (target if target is not None
+                                   else pitched_rate)
+                    if prescale_to != cur_rate:
+                        return True
+                elif target is not None or pitched_rate != cur_rate:
+                    return True
+        return False
+
+    if not args.dry_run and pitch_plans and shutil.which("rubberband") is None:
+        print(
+            "Error: 'rubberband' not found. Pitch shifting (-p, -S, -D pitch)\n"
+            "requires rubberband installed (apt/pacman/brew install rubberband).",
+            file=sys.stderr,
+        )
+        return 127
+
+    # SoX runs for every resample plan, for pitch-up pre-scales, and for
+    # pitch-down settles/targets; rubberband only ever shifts pitch.
+    if (not args.dry_run and _needs_sox()
+            and shutil.which("sox") is None):
+        print(
+            "Error: 'sox' not found. Resampling (-R) and pitch rate steps\n"
+            "require SoX installed (apt/pacman/brew install sox).",
+            file=sys.stderr,
+        )
+        return 127
+
+    # Output filenames carry the params suffix ([speed|st] [<codec>
+    # <bitrate>k] [<rate>]) appended to a base. --autorename builds the
+    # base from tags ("Artist - Title", artist prefix omitted when the
+    # source has no artist tag); by default the base is the input's own
+    # stem. The Title tag follows --autotag/--simple-title, not this.
+    # Names are sanitized for Linux/Windows-safe filenames. Preserve
+    # input directory. -D instead strips shift/rate tags off the input's
+    # own name and title, keeping quality tags verbatim.
+    if args.denightcore:
+        original_title = split_shift_tags(original_title)[0]
+        name_base = cleaned_stem
+        if name_base is None:
+            print("Error: could not determine denightcored name",
+                  file=sys.stderr)
+            return 1
+    else:
+        name_base = name_base_for(args.autorename, artist,
+                                  original_title, input_path.stem)
+    if out_dir is not None:
+        parent = out_dir
+    else:
+        parent = single_parent(args, input_path)
+    outputs = []
+    for suffix, _ in jobs:
+        outputs.append((
+            suffix,
+            parent / (sanitize_filename(name_base + suffix) + out_ext),
+        ))
+
+    if out_dir is not None:
+        # Batch mode funnels many inputs into one directory, so
+        # tag-derived names can collide (duplicate files with identical
+        # tags). The first file keeps the name; later ones get
+        # " (2)", " (3)", ...
+        outputs = [(suffix, claim_output_path(ctx, output_path))
+                   for suffix, output_path in outputs]
+
+    if args.output is not None and out_dir is None:
+        # -o overrides the computed name verbatim (batch+-o is rejected
+        # in main, so exactly one job exists here).
+        outputs = [(suffix, parent / args.output)
+                   for suffix, _ in outputs]
+
+    for suffix, output_path in outputs:
+        if output_path == input_path:
+            print("Error: output would overwrite input, aborting", file=sys.stderr)
+            return 1
+
+    if args.dry_run:
+        be = backend.get("kind") if backend else None
+        for suffix, output_path in outputs:
+            title = compute_new_title(args, tmpl, title_base,
+                                      original_title, suffix)
+            flag_c = (cover_flag if (cover_flag is not None
+                                     and out_ext in COVER_FORMATS)
+                      else None)
+            probe_c = None
+            if out_ext in COVER_FORMATS:
+                cc = cover_codec_name(input_path)
+                probe_c = cc if cc in COVER_CODECS else None
+            mode, cover = describe_output_tags(
+                tmpl, args.no_delete_tags, len(ff_extra), be, out_ext,
+                flag_c, probe_c)
+            preview_output(output_path, title, mode, cover,
+                           head=batch_prefix(ctx))
+        return 0
+
+    for suffix, output_path in outputs:
+        if output_path.exists() and not args.overwrite:
+            if out_dir is not None and all(
+                    p.exists() for _, p in outputs):
+                # Batch rerun without -y: skip what's already encoded
+                # (add files freely; -y re-encodes everything).
+                print(f"Skipping {input_path.name} (output exists, "
+                      "use -y to re-encode)", file=sys.stderr)
+                ctx["skipped"] = ctx.get("skipped", 0) + 1
+                return 0
+            print(
+                f"Error: output already exists: {output_path} (use -y to overwrite)",
+                file=sys.stderr,
+            )
+            return 1
+
+    try:
+        # qaac (CoreAudio, often run via wine) encodes ALAC when present;
+        # otherwise ffmpeg's alac encoder is used. qaac needs integer PCM.
+        # AAC also prefers qaac (announced once in main); its fallback
+        # warning already fired there.
+        be_kind = backend.get("kind") if backend else None
+        qaac_version = find_qaac() if args.format == "alac" else None
+        use_qaac = (qaac_version is not None
+                    or (args.format == "aac" and be_kind == "qaac"))
+        if args.format == "alac":
+            if use_qaac:
+                say(f"Encoding ALAC with {qaac_version}")
+            else:
+                say("Note: qaac not found, encoding ALAC with ffmpeg")
+        no_delete = args.no_delete_tags
+        # Template strip mode drops every unlisted tag; --no-delete-tags
+        # maps source tags first so the template only overrides.
+        strip = tmpl is not None and not no_delete
+        extra_tags = ff_extra if tmpl is not None else {}
+        if be_kind == "opusenc" and (tmpl is None or no_delete):
+            # opusenc tags natively (ffmpeg can't write opus pictures),
+            # so it needs the full source tag set up front: the rebuilt
+            # comments below must not lose anything --discard-comments
+            # cleared from the temp wav.
+            src_tags, _ = read_all_tags(input_path)
+            merged = {str(k).lower(): v for k, v in src_tags.items()}
+            if tmpl is not None:
+                merged.update({str(k).lower(): v
+                               for k, v in ff_extra.items()})
+            extra_tags = merged
+        # Final-encode triple for ffmpeg-backed outputs: (codec, extra
+        # ffmpeg args, forced depth). Lossy+ffmpeg passes only the user's
+        # --lossy-opts and skips depth forcing (encoders manage it);
+        # lossless passes the format compression defaults (FLAC 12).
+        if is_lossy_output and be_kind == "ffmpeg":
+            enc_codec = out_codec
+            enc_args = list(lossy_opts)
+            enc_fmt = None
+        else:
+            enc_codec = out_codec
+            enc_args = list(OUTPUT_FORMATS[args.format].get("ffmpeg_args")
+                            or [])
+            enc_fmt = depth_fmt
+
+        meta_src = None if strip else input_path
+
+        def finalize_ffmpeg(wav_path, final_path, title, codec, sample_fmt,
+                            ffmpeg_args=None, drop_video=False,
+                            drop_tags=None, dither=None, bitexact=True):
+            run_ffmpeg(wav_path, final_path, None, codec, title,
+                       overwrite=args.overwrite,
+                       metadata_from=meta_src,
+                       sample_fmt=sample_fmt,
+                       with_cover=map_cover and meta_src is not None,
+                       cover_file=(flag_cover or
+                                   (cover_tmp if strip else None)),
+                       strip_tags=strip,
+                       extra_tags=extra_tags or None,
+                       ffmpeg_args=ffmpeg_args,
+                       drop_video=drop_video,
+                       drop_tags=drop_tags,
+                       dither=dither,
+                       bitexact=bitexact)
+            normalize_cover(final_path)
+
+        def normalize_cover(final_path):
+            if out_ext == ".flac" and (
+                    norm_image is not None or want_c is not None
+                    or want_d is not None or stub_encoder is not None):
+                fixed = []
+                if norm_image is not None:
+                    fixed.append("Cover (front) picture")
+                if want_c is not None or want_d is not None:
+                    fixed.append("COMMENT/DESCRIPTION")
+                if stub_encoder is not None:
+                    fixed.append("ENCODER")
+                if not flac_postprocess(final_path, norm_image, norm_mime,
+                                        want_c, want_d, stub_encoder):
+                    print(f"Warning: metaflac fixes failed on {final_path}",
+                          file=sys.stderr)
+                elif fixed:
+                    say(f"  metaflac: {', '.join(fixed)}")
+
+        def finalize_qaac(wav_path, final_path, title, alac=True,
+                          extra_args=(), dither=None):
+            if sample_is_float(wav_path):
+                int_wav = temp_wav()
+                run_ffmpeg(wav_path, int_wav, None, depth_pcm,
+                           title, overwrite=True, dither=dither)
+                wav_path = int_wav
+            qtmp = temp_file("m4a")
+            say(f"  qaac encode {'alac' if alac else 'aac'}")
+            run_qaac_alac(wav_path, qtmp, alac=alac, extra_args=extra_args)
+            # Tags and cover art go through ffmpeg, never qaac. AAC is
+            # lossy: drop stale source encoder tags (ALAC keeps them).
+            # Lossy keeps the encoder's own tags unless templated.
+            finalize_ffmpeg(qtmp, final_path, title, "copy", None,
+                            drop_tags=None if alac else STALE_TAGS,
+                            bitexact=tmpl is not None or alac)
+
+        def finalize_lame(wav_path, final_path, title):
+            ltmp = temp_file("mp3")
+            say("  lame encode mp3")
+            run_lame(wav_path, ltmp, lossy_opts)
+            # Tags and cover art go through ffmpeg, never lame.
+            finalize_ffmpeg(ltmp, final_path, title, "copy", None,
+                            drop_tags=STALE_TAGS,
+                            bitexact=tmpl is not None)
+
+        def opus_tags_for(title):
+            if tmpl is not None and not no_delete:
+                tags = {str(k).lower(): v for k, v in ff_extra.items()
+                        if str(k).lower() != "encoder"}
+            else:
+                # Full source set, lowercased (opus comments are
+                # case-insensitive): title/artist are overridden below,
+                # stale source encoder tags describe the input, not this
+                # encode, and album_artist folds into albumartist.
+                tags = {str(k).lower(): v for k, v in extra_tags.items()}
+                tags.pop("encoder", None)
+                tags.pop("encoding_settings", None)
+                if ("album_artist" in tags
+                        and "albumartist" not in tags):
+                    tags["albumartist"] = tags.pop("album_artist")
+                else:
+                    tags.pop("album_artist", None)
+                if artist:
+                    tags["artist"] = artist
+            tags["title"] = title
+            return tags
+
+        def finalize_opusenc(wav_path, final_path, title):
+            cover = flag_cover or cover_tmp
+            say("  opusenc encode")
+            run_opusenc(wav_path, final_path, opus_tags_for(title),
+                        cover, lossy_opts)
+
+        def finalize_wav(wav_path, final_path, title, codec, sample_fmt):
+            drop = (is_lossy_output and be_kind == "ffmpeg"
+                    and args.format == "opus")
+            # Triangular dither on processed 16-bit encodes (resample/pitch
+            # temps always hold fractional values, so truncation would
+            # correlate; deeper targets keep sub-LSB detail unaided).
+            # Float-accepting lossy encoders get untouched float, direct
+            # paths stay bit-perfect.
+            dither = ("s16" if (not is_lossy_output
+                                and sample_fmt == "s16") else None)
+            finalize_ffmpeg(wav_path, final_path, title, codec,
+                            sample_fmt, ffmpeg_args=enc_args or None,
+                            drop_video=drop,
+                            drop_tags=STALE_TAGS if is_lossy_output else None,
+                            dither=dither,
+                            bitexact=tmpl is not None or not is_lossy_output)
+
+        # Cover art: --cover wins outright; otherwise the original picture
+        # is reused (extracted file for qaac/lame/opusenc, mapped stream
+        # for ffmpeg). Only wav cannot carry pictures; opus pictures go
+        # via opusenc --picture (ffmpeg ogg-opus rejects video).
+        cover_ok_format = out_ext in (".flac", ".m4a", ".mp3", ".opus")
+        flag_cover = cover_flag if (cover_flag is not None
+                                    and cover_ok_format) else None
+        if cover_flag is not None and not cover_ok_format:
+            print(f"Warning: --cover ignored for {out_ext} output "
+                  "(format cannot carry pictures)", file=sys.stderr)
+        if (flag_cover is not None and out_ext == ".opus"
+                and be_kind == "ffmpeg"):
+            # ffmpeg's ogg-opus muxer rejects video streams outright;
+            # only opusenc can attach pictures to .opus.
+            print("Warning: --cover ignored for ffmpeg Opus output "
+                  "(use opusenc backend for Opus pictures)", file=sys.stderr)
+            flag_cover = None
+        if stub_encoder is not None and out_ext != ".flac":
+            print("Warning: custom 'encoder' tags only supported for FLAC "
+                  "output; skipped", file=sys.stderr)
+        orig_cover = None
+        if flag_cover is None and cover_ok_format:
+            cc = cover_codec_name(input_path)
+            if cc in COVER_CODECS:
+                orig_cover = cc
+        # ffmpeg ogg-opus takes no pictures at all; opusenc handles them.
+        map_cover = (flag_cover is None and orig_cover is not None
+                     and cover_ok_format and out_ext != ".opus")
+        # FLAC finals get post-processing via metaflac: Cover (front)
+        # type (ffmpeg never propagates picture types), exact
+        # COMMENT/DESCRIPTION (ffmpeg merges COMMENT into DESCRIPTION on
+        # write), and custom ENCODER values (ffmpeg stamps its own or,
+        # under bitexact, nothing). m4a covr atoms carry no type and wav
+        # carries no pictures, so only flac qualifies.
+        want_c, want_d = flac_comment_wants(tmpl, ff_extra, input_path,
+                                              out_ext, no_delete)
+        need_meta = (out_ext == ".flac"
+                     and (flag_cover is not None or orig_cover is not None
+                          or want_c is not None or want_d is not None
+                          or stub_encoder is not None))
+        if need_meta and missing_metaflac():
+            return 127
+        norm_image, norm_mime = None, None
+        if need_meta and flag_cover is not None:
+            norm_image = flag_cover
+            norm_mime = _IMAGE_MIME[flag_cover.suffix.lower()]
+
+        tempdir = None
+        cli_backend = be_kind in ("lame", "opusenc", "qaac")
+        if (use_qaac or cli_backend
+                or any(plan[0] != "direct" for _, plan in jobs)
+                or (need_meta and flag_cover is None
+                    and orig_cover is not None)):
+            tempdir = Path(tempfile.mkdtemp(prefix="nightcore-"))
+        # One-line backend label for the per-job stage headers below.
+        if use_qaac:
+            enc_label = "qaac"
+        elif be_kind is not None:
+            enc_label = be_kind
+        else:
+            enc_label = out_codec
+        # 32-bit int sources need s32 temps (f32's 24-bit mantissa would
+        # eat LSBs); everything else rides exact in f32.
+        tmp_codec = ("pcm_s32le" if (bits is not None and bits > 24)
+                     else "pcm_f32le")
+        # Triangular-dither target for processed int encodes through
+        # qaac's float-int conversion temp: 16-bit only (deeper targets
+        # keep sub-LSB detail unaided). Direct paths pass None to stay
+        # bit-perfect.
+        qaac_dither = ("s16" if depth_pcm == "pcm_s16le" else None)
+
+        def ffmpeg_step(audio_filter):
+            # Announce an ffmpeg decode/speedup step (its log is piped
+            # away under -q, so without this the stage goes unseen).
+            if audio_filter is not None and "asetrate" in audio_filter:
+                say(f"  ffmpeg {audio_filter}")
+            else:
+                say("  ffmpeg decode")
+
+        try:
+            step = 0
+
+            def temp_file(ext):
+                nonlocal step
+                step += 1
+                assert tempdir is not None
+                return tempdir / f"step{step}.{ext}"
+
+            def temp_wav():
+                return temp_file("wav")
+
+            # Attached pictures don't survive temp WAVs: extract the original
+            # once for template-mode cover replacement; the same file feeds
+            # Cover (front) normalization below. Plain ffmpeg finals map
+            # covers straight from the source.
+            cover_tmp = None
+            need_cover_file = (need_meta or cli_backend
+                               or (tmpl is not None and cover_ok_format
+                                   and any(plan[0] != "direct"
+                                           for _, plan in jobs)))
+            if (flag_cover is None and orig_cover is not None
+                    and need_cover_file):
+                cover_tmp = extract_cover_tmp(
+                    input_path, orig_cover, tempdir)
+                if (cover_tmp is not None and norm_image is None
+                        and out_ext == ".flac"):
+                    norm_image = cover_tmp
+                    norm_mime = ("image/jpeg"
+                                 if cover_tmp.suffix == ".jpg"
+                                 else "image/png")
+
+            for (suffix, plan), (_, output_path) in zip(jobs, outputs):
+                new_title = compute_new_title(args, tmpl, title_base,
+                                                original_title, suffix)
+                kind = plan[0]
+                if kind == "direct":
+                    desc = ("speedup" if plan[1] is not None else "convert")
+                elif kind == "resample":
+                    desc = f"resample to {format_rate(plan[2])}"
+                else:
+                    desc = f"pitch {plan[3]:+}st"
+                    if plan[4] is not None:
+                        desc += f" + resample to {format_rate(plan[4])}"
+                head = batch_prefix(ctx)
+                say(f"{head}{output_path.name}: {desc} "
+                    f"-> {args.format} via {enc_label}")
+                _active_outputs.add(output_path)
+                if kind == "direct":
+                    if use_qaac:
+                        tmp = temp_wav()
+                        ffmpeg_step(plan[1])
+                        run_ffmpeg(input_path, tmp, plan[1], depth_pcm,
+                                   new_title, overwrite=True)
+                        is_alac = (args.format == "alac")
+                        finalize_qaac(tmp, output_path, new_title,
+                                      alac=is_alac,
+                                      extra_args=([] if is_alac
+                                                  else lossy_opts))
+                    elif be_kind == "lame":
+                        tmp = temp_wav()
+                        ffmpeg_step(plan[1])
+                        run_ffmpeg(input_path, tmp, plan[1], tmp_codec,
+                                   new_title, overwrite=True)
+                        finalize_lame(tmp, output_path, new_title)
+                    elif be_kind == "opusenc":
+                        tmp = temp_wav()
+                        ffmpeg_step(plan[1])
+                        run_ffmpeg(input_path, tmp, plan[1], tmp_codec,
+                                   new_title, overwrite=True)
+                        finalize_opusenc(tmp, output_path, new_title)
+                    elif is_lossy_output and be_kind == "ffmpeg":
+                        ffmpeg_step(plan[1])
+                        run_ffmpeg(input_path, output_path, plan[1],
+                                   enc_codec, new_title,
+                                   overwrite=args.overwrite,
+                                   sample_fmt=enc_fmt,
+                                   cover_file=flag_cover,
+                                   strip_tags=strip,
+                                   extra_tags=extra_tags or None,
+                                   ffmpeg_args=enc_args,
+                                   drop_video=(args.format == "opus"),
+                                   drop_tags=STALE_TAGS,
+                                   bitexact=tmpl is not None)
+                        normalize_cover(output_path)
+                    else:
+                        ffmpeg_step(plan[1])
+                        run_ffmpeg(input_path, output_path, plan[1], out_codec,
+                                   new_title, overwrite=args.overwrite,
+                                   sample_fmt=depth_fmt,
+                                   cover_file=flag_cover,
+                                   strip_tags=strip,
+                                   extra_tags=extra_tags or None,
+                                   ffmpeg_args=enc_args or None)
+                        normalize_cover(output_path)
+                elif kind == "resample":
+                    _, prefilter, target = plan
+                    tmp1, tmp2 = temp_wav(), temp_wav()
+                    ffmpeg_step(prefilter)
+                    run_ffmpeg(input_path, tmp1, prefilter, tmp_codec,
+                               new_title, overwrite=True)
+                    say(f"  SoX resample to {format_rate(target)}")
+                    run_sox_rate(tmp1, tmp2, target)
+                    if use_qaac:
+                        is_alac = (args.format == "alac")
+                        finalize_qaac(tmp2, output_path, new_title,
+                                      alac=is_alac,
+                                      extra_args=([] if is_alac
+                                                  else lossy_opts),
+                                      dither=qaac_dither)
+                    elif be_kind == "lame":
+                        finalize_lame(tmp2, output_path, new_title)
+                    elif be_kind == "opusenc":
+                        finalize_opusenc(tmp2, output_path, new_title)
+                    else:
+                        finalize_wav(tmp2, output_path, new_title,
+                                     enc_codec, enc_fmt)
+                elif kind == "pitch":
+                    _, prefilter, pitched_rate, pitch_st, target, rb_job = plan
+                    tmp1 = temp_wav()
+                    ffmpeg_step(prefilter)
+                    run_ffmpeg(input_path, tmp1, prefilter, tmp_codec,
+                               new_title, overwrite=True)
+                    # tmp1 rate: post-prefilter if any, else the input rate.
+                    cur_rate = (round(sample_rate * speed)
+                                if prefilter is not None else sample_rate)
+                    cur = tmp1
+                    if pitch_st >= 0:
+                        # Shift up: SoX pre-scales first, otherwise shifted
+                        # highs alias straight back into the audible band.
+                        # With -R the target already sits above the pitched
+                        # rate, so one pass covers headroom and settling.
+                        prescale_to = (target if target is not None
+                                       else pitched_rate)
+                        if prescale_to != cur_rate:
+                            tmp2 = temp_wav()
+                            if target is not None:
+                                say(f"  SoX prescale to {format_rate(target)} "
+                                    "(pitch headroom + resample)")
+                            else:
+                                say(f"  SoX prescale to {format_rate(pitched_rate)} "
+                                    "for pitch headroom")
+                            run_sox_rate(cur, tmp2, prescale_to)
+                            cur = tmp2
+                            cur_rate = prescale_to
+                    tmp3 = temp_wav()
+                    say(f"  rubberband pitch {pitch_st:+}st")
+                    run_rubberband(cur, tmp3, pitch_st, rb_job)
+                    cur = tmp3
+                    cur, _ = tame_hot_wav(cur, temp_wav)
+                    cur = tmp3
+                    # Settle the rate afterwards: the explicit target, else
+                    # the pitched rate for down-shifts (up-shifts already
+                    # sit at it from the pre-scale above).
+                    settle = (target if target is not None
+                              else (pitched_rate if pitch_st < 0 else None))
+                    if settle is not None and settle != cur_rate:
+                        tmp4 = temp_wav()
+                        say(f"  SoX settle to {format_rate(settle)}")
+                        run_sox_rate(cur, tmp4, settle)
+                        cur = tmp4
+                    if use_qaac:
+                        is_alac = (args.format == "alac")
+                        finalize_qaac(cur, output_path, new_title,
+                                      alac=is_alac,
+                                      extra_args=([] if is_alac
+                                                  else lossy_opts),
+                                      dither=qaac_dither)
+                    elif be_kind == "lame":
+                        finalize_lame(cur, output_path, new_title)
+                    elif be_kind == "opusenc":
+                        finalize_opusenc(cur, output_path, new_title)
+                    else:
+                        finalize_wav(cur, output_path, new_title,
+                                     enc_codec, enc_fmt)
+                ctx["converted"] = ctx.get("converted", 0) + 1
+                _active_outputs.discard(output_path)
+        finally:
+            if tempdir is not None:
+                shutil.rmtree(tempdir, ignore_errors=True)
+        if args.denightcore:
+            # Bit-perfect verdict for the undo: a pure sample-rate
+            # speedup inverts bit-exactly (lossless, no resampling);
+            # anything else degrades, with stacked reasons.
+            bad = []
+            if d_st != 0.0:
+                bad.append("pitch inversion is lossy "
+                           "(rubberband resynthesis)")
+            if target_rate is not None:
+                bad.append(f"resampled to {format_rate(target_rate)} "
+                           "(original rate unrecoverable)")
+            if is_lossy_output:
+                bad.append(f"re-encoded to {args.format} (lossy)")
+            if codec in LOSSY_CODECS:
+                bad.append(f"source is lossy ({codec})")
+            if bad:
+                print(f"Warning: denightcore of {input_path.name} is NOT "
+                      f"bit-perfect: {'; '.join(bad)}", file=sys.stderr)
+            else:
+                say(f"Bit-perfect denightcore of {input_path.name}")
+        return 0
+
+    except subprocess.CalledProcessError as e:
+        print(f"\nffmpeg/sox/rubberband/qaac/lame/opusenc failed with exit code {e.returncode}", file=sys.stderr)
+        return 1
+
+    except FileNotFoundError:
+        print("Error: a required tool went missing mid-run. ffmpeg is always needed (plus sox for resampling, rubberband for pitch).", file=sys.stderr)
+        return 127
+
+
