@@ -33,7 +33,7 @@ Encoded with libopus 1.6.1, libopusenc 0.3
 User comments section follows...
 \tENCODER=opusenc from opus-tools 0.2
 \ttitle=Some Title
-\tdescription=Made with nightcore 2026.10.01-1 (https://example.invalid/nightcore)
+\tdescription=Made with nightcore 2026.10.01-4 (https://example.invalid/nightcore)
 Opus stream 1:
 \tPre-skip: 312
 """
