@@ -3,8 +3,10 @@
 from pathlib import Path
 import re
 
+from . import __version__
 from .audio import probe_audio
-from .constants import _BITRATE_TAG, _DEPTH_TAG, _RATE_TOKEN, _SHIFT_TOKEN, _TAG_ALIASES
+from .constants import _BITRATE_TAG, _DEPTH_TAG, _RATE_TOKEN, _SHIFT_TOKEN, _TAG_ALIASES, PROJECT_URL, STAMP_TAG
+from .native_tags import native_format_tags
 
 def parse_tag_template(path):
     """Parse a tag template file; return ordered {lowerkey: (origkey, value|None)}.
@@ -74,9 +76,15 @@ def clean_encoder(enc, codec):
 
 
 def read_tags(input_path, *names):
-    """Present format tags as {lowercased-name: stripped value}."""
+    """Present format tags as {lowercased-name: stripped value}.
+
+    Vorbis-family formats (flac/opus/ogg) read via their native tools
+    (ffprobe aliases DESCRIPTION to "comment" there and cannot parse
+    opus at all); everything else uses the ffprobe result.
+    """
     wanted = {str(n).lower() for n in names}
-    tags = probe_audio(input_path)["format_tags"] or {}
+    own = native_format_tags(input_path)
+    tags = own if own is not None else probe_audio(input_path)["format_tags"] or {}
     return {
         str(k).lower(): str(v).strip()
         for k, v in tags.items()
@@ -84,9 +92,23 @@ def read_tags(input_path, *names):
     }
 
 
+def tool_stamp():
+    """Provenance string for --stamp outputs.
+
+    Written to the STAMP_TAG (DESCRIPTION) tag on every output; an
+    explicit per-run mark, so it overrides any template description.
+    """
+    return f"Made with nightcore {__version__} ({PROJECT_URL})"
+
+
 def read_format_tag(input_path, tag):
-    """Single format tag value (stripped), or None if missing/unreadable."""
-    for k, v in (probe_audio(input_path)["format_tags"] or {}).items():
+    """Single format tag value (stripped), or None if missing/unreadable.
+
+    Same native-first sourcing as read_tags.
+    """
+    own = native_format_tags(input_path)
+    tags = own if own is not None else probe_audio(input_path)["format_tags"] or {}
+    for k, v in tags.items():
         if str(k).lower() == str(tag).lower():
             value = str(v).strip()
             return value if value else None
@@ -255,8 +277,9 @@ def describe_output_tags(tmpl, no_delete, ff_count, backend_kind, out_ext,
 def read_all_tags(input_path):
     """All format + first-audio-stream tags as (fmt_dict, stream_dict).
 
-    Keys keep their original case; empty values are dropped. Returns
-    ({}, {}) when unreadable. Never raises.
+    Keys keep their original case; empty values are dropped. Format
+    tags come from the native reader where one exists (see read_tags).
+    Returns ({}, {}) when unreadable. Never raises.
     """
     probe = probe_audio(input_path)
 
@@ -264,7 +287,8 @@ def read_all_tags(input_path):
         return {str(k): str(v) for k, v in (tags or {}).items()
                 if str(v) != ""}
 
-    return (_clean(probe["format_tags"]),
+    own = native_format_tags(input_path)
+    return (_clean(own if own is not None else probe["format_tags"]),
             _clean(probe["audio"].get("tags")))
 
 

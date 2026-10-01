@@ -11,7 +11,8 @@ state-of-the-art, modern audio processing tools.
 SoX is used for resampling stages, rubberband for pitch-changing stages and
 FFmpeg as a general tool for everything else.
 
-Most of the flags here should cover 99% of all Nightcore tracks from the 2000s.
+It has every feature you'd possibly want to automate the (re)making and tagging
+of Nightcore. You can, of course, slow down music with it as well.
 
 ## Some stuff you can do with this script:
 
@@ -31,18 +32,21 @@ Most of the flags here should cover 99% of all Nightcore tracks from the 2000s.
 Have all of these installed for the smoothest experience:
 
 - python3
-- FFmpeg
+- FFmpeg (incl. ffprobe, used for probing and transcoding)
 - SoX
 - rubberband
-- flac (metaflac, because FFmpeg WILL screw up your tags, have this installed)
-- qaac/qaac-wine (optional, for ALAC/AAC, FFmpeg fallback)
+- flac (metaflac reads/writes FLAC tags exactly, because FFmpeg WILL screw up your tags, have this installed)
+- opus-tools (opusenc encodes, opusinfo reads Opus tags that ffprobe cannot parse)
+- vorbis-tools (vorbiscomment reads Ogg tags)
 - lame (optional, MP3 fallback when FFmpeg lacks libmp3lame)
-- opus-tools (optional, preferred Opus encoder, ffmpeg libopus fallback)
+- qaac/qaac-wine (optional, for ALAC/AAC, FFmpeg fallback)
+
+Debian/Ubuntu: `sudo apt install ffmpeg sox rubberband-cli flac opus-tools vorbis-tools lame`
 
 ## Figuring out semitone differences for pitched up nightcore
 
 Measure the spectral peak of the original track and of the pitched track
-at the same position (see [Nightcore Semitone Detection](Nightcore%20Semitone%20Detection.pdf)
+at the same position (see [Nightcore Semitone Detection](https://lusosterone.net/blogs/nightcore-semitone-detection/)
 for a walkthrough), then:
 
 ```

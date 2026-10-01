@@ -8,14 +8,14 @@ import shutil
 import signal
 import sys
 
-from . import util
+from . import __version__, util
 from .audio import speed_from_semitones
 from .backends import detect_lossy_dialect, select_lossy_backend
 from .constants import AUDIO_EXTS, COVER_ART_EXTS, COVER_ART_NAMES, LOSS_DEFAULTS, OUTPUT_FORMATS, _IMAGE_MIME
 from .convert import run_conversion
 from .naming import batch_op_dir
 from .renametag import run_renametag
-from .tags import parse_tag_template
+from .tags import parse_tag_template, tool_stamp
 from .util import _help_formatter, _on_sigint, missing_tools, say
 
 def parse_arguments():
@@ -170,6 +170,15 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        "--stamp",
+        action="store_true",
+        default=False,
+        help="Stamp outputs with a 'Made with nightcore <version> (<url>)'\n"
+             "DESCRIPTION tag (overrides any template description;\n"
+             "FLAC outputs then require metaflac)"
+    )
+
+    parser.add_argument(
         "-o", "--output",
         type=str,
         default=None,
@@ -225,6 +234,13 @@ def parse_arguments():
         default=None,
         metavar="IMG",
         help="PNG/JPG artwork: sole attached picture of outputs."
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="Print version and exit"
     )
 
     parser.add_argument(
@@ -580,6 +596,7 @@ def main():
         "cover_flag": cover_flag,
         "lossy_opts": lossy_opts,
         "backend": backend,
+        "stamp": tool_stamp() if args.stamp else None,
         "speed": speed,
         "combo": combo,
         "st_signed": st_signed,
