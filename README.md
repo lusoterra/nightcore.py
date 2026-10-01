@@ -3,7 +3,7 @@
 This is a ~~simple~~ wrapper that creates bit-perfect Nightcore by altering the
 audio to change speed/pitch file using FFmpeg, SoX and rubberband.
 
-[![asciicast](https://asciinema.org/a/UqwG1b66mSsPeLCk.svg)](https://asciinema.org/a/UqwG1b66mSsPeLCk)
+[demo](nightcore.cast)
 
 Lots of autism went into this to make the most pristine Nightcore possible using
 state-of-the-art, modern audio processing tools.
@@ -40,8 +40,6 @@ Have all of these installed for the smoothest experience:
 - vorbis-tools (vorbiscomment reads Ogg tags)
 - lame (optional, MP3 fallback when FFmpeg lacks libmp3lame)
 - qaac/qaac-wine (optional, for ALAC/AAC, FFmpeg fallback)
-
-Debian/Ubuntu: `sudo apt install ffmpeg sox rubberband-cli flac opus-tools vorbis-tools lame`
 
 ## Figuring out semitone differences for pitched up nightcore
 
