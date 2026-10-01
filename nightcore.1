@@ -140,6 +140,11 @@ cannot be preserved without re-encoding, so those fail loudly.
 With \fI--tag-template\fR: keep source tags not listed in the template
 (default: strip them, template only). Needs a template.
 .TP
+.B --stamp
+Stamp outputs with a \fIMade with nightcore <version> (<url>)\fR
+DESCRIPTION tag. Overrides any template description; FLAC outputs then
+require metaflac.
+.TP
 .B --tag-template \fIFILE\fR
 Apply a tag template file: one \fIkey="value"\fR entry per tag (values
 may span lines). Empty or bare values keep the source tag; tags missing
@@ -152,6 +157,9 @@ without a template keep the encoder's own tags instead).
 .B --cover \fIIMG\fR
 PNG/JPG artwork to use as the sole attached picture of outputs (only wav
 cannot carry pictures; opus pictures go via opusenc).
+.TP
+.B --version
+Print version and exit.
 .TP
 .B --lossy-opts \fIOPTS\fR
 Encoder quality flags (shlex-split, equals form only). Defaults: V0

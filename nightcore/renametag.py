@@ -9,7 +9,7 @@ import tempfile
 
 from .audio import cover_codec_name, extract_cover_tmp, get_audio_info
 from .backends import flac_postprocess, missing_metaflac, run_ffmpeg
-from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, _IMAGE_MIME
+from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, STAMP_TAG, _IMAGE_MIME
 from .naming import claim_output_path, name_base_for, single_parent, strip_quality_rate_tags
 from .tags import apply_template_tags, compute_new_title, describe_output_tags, flac_comment_wants, get_artist, get_title, sanitize_filename
 from .util import _active_outputs, batch_prefix, preview_output, say
@@ -56,6 +56,11 @@ def run_renametag(args, input_path, out_dir, ctx):
          original_title) = apply_template_tags(
              tmpl, input_path, original_title, artist,
              keep_missing=args.no_delete_tags)
+    stamp = ctx.get("stamp")
+    if stamp is not None:
+        # --stamp always wins, even over a template description (same
+        # rationale as conversions: explicit per-run provenance mark).
+        ff_extra[STAMP_TAG] = stamp
     codec = get_audio_info(input_path)[0]
     if codec in LOSSY_CODECS:
         # Same stale-quality-title rule as conversions.
@@ -153,6 +158,10 @@ def run_renametag(args, input_path, out_dir, ctx):
 
     want_c, want_d = flac_comment_wants(tmpl, ff_extra, input_path,
                                         out_ext, no_delete)
+    if stamp is not None and out_ext == ".flac":
+        # metaflac writes DESCRIPTION exactly, immune to ffmpeg's
+        # COMMENT-into-DESCRIPTION merge on FLAC writes.
+        want_d = stamp
     need_meta = (out_ext == ".flac"
                  and (flag_cover is not None or orig_cover is not None
                       or want_c is not None or want_d is not None
@@ -197,7 +206,8 @@ def run_renametag(args, input_path, out_dir, ctx):
                                (cover_tmp if strip else None)),
                    strip_tags=strip,
                    extra_tags=(ff_extra or None)
-                   if tmpl is not None else None,
+                   if tmpl is not None else
+                   ({STAMP_TAG: stamp} if stamp is not None else None),
                    bitexact=True)
         if need_meta and not flac_postprocess(
                 final_path, norm_image, norm_mime,

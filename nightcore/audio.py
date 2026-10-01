@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from .constants import COVER_CODECS, STANDARD_SAMPLE_RATES
+from .native_tags import native_format_tags
 
 _probe_cache = {}
 
@@ -152,6 +153,15 @@ def get_audio_info(input_path):
 
     stream_tags = stream.get("tags") or {}
     raw_encoder = stream_tags.get("encoder") or fmt_tags.get("encoder")
+    if raw_encoder is None:
+        # Vorbis-family encoder fields are invisible to ffprobe (see
+        # native_tags); consult the native reader before giving up.
+        own = native_format_tags(input_path)
+        if own:
+            for k, v in own.items():
+                if k.lower() == "encoder" and str(v).strip():
+                    raw_encoder = str(v).strip()
+                    break
 
     return codec, bit_rate, bits_from_stream(stream), format_bit_rate, raw_encoder
 

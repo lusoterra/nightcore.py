@@ -9,7 +9,7 @@ import tempfile
 
 from .audio import cover_codec_name, extract_cover_tmp, format_rate, sample_is_float, semitones_from_speed, speed_from_semitones
 from .backends import find_qaac, flac_postprocess, missing_metaflac, run_ffmpeg, run_lame, run_opusenc, run_qaac_alac, run_rubberband, run_sox_rate, tame_hot_wav
-from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, OUTPUT_FORMATS, STALE_TAGS, _IMAGE_MIME
+from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, OUTPUT_FORMATS, STALE_TAGS, STAMP_TAG, _IMAGE_MIME
 from .lrc import run_lrc
 from .naming import claim_output_path, name_base_for, single_parent, split_shift_tags
 from .plan import resolve_audio_naming
@@ -102,6 +102,11 @@ def run_conversion(args, input_path, out_dir, ctx):
     title_base = naming["title_base"]
     ff_extra = naming["ff_extra"]
     stub_encoder = naming["stub_encoder"]
+    stamp = ctx.get("stamp")
+    if stamp is not None:
+        # --stamp always wins, even over a template description: it is
+        # an explicit per-run provenance mark, not curated metadata.
+        ff_extra[STAMP_TAG] = stamp
 
     if (not args.denightcore and not pitch_mode and speed == 1.0
             and target_rate is None
@@ -294,7 +299,7 @@ def run_conversion(args, input_path, out_dir, ctx):
         # Template strip mode drops every unlisted tag; --no-delete-tags
         # maps source tags first so the template only overrides.
         strip = tmpl is not None and not no_delete
-        extra_tags = ff_extra if tmpl is not None else {}
+        extra_tags = ff_extra if tmpl is not None else dict(ff_extra)
         if be_kind == "opusenc" and (tmpl is None or no_delete):
             # opusenc tags natively (ffmpeg can't write opus pictures),
             # so it needs the full source tag set up front: the rebuilt
@@ -306,6 +311,11 @@ def run_conversion(args, input_path, out_dir, ctx):
                 merged.update({str(k).lower(): v
                                for k, v in ff_extra.items()})
             extra_tags = merged
+        if stamp is not None and tmpl is None:
+            # Non-template runs build extra_tags from the source tag
+            # set, which knows nothing of the stamp (template runs
+            # ride along in ff_extra above).
+            extra_tags = {**extra_tags, STAMP_TAG: stamp}
         # Final-encode triple for ffmpeg-backed outputs: (codec, extra
         # ffmpeg args, forced depth). Lossy+ffmpeg passes only the user's
         # --lossy-opts and skips depth forcing (encoders manage it);
@@ -466,6 +476,10 @@ def run_conversion(args, input_path, out_dir, ctx):
         # carries no pictures, so only flac qualifies.
         want_c, want_d = flac_comment_wants(tmpl, ff_extra, input_path,
                                               out_ext, no_delete)
+        if stamp is not None and out_ext == ".flac":
+            # metaflac writes DESCRIPTION exactly, immune to ffmpeg's
+            # COMMENT-into-DESCRIPTION merge on FLAC writes.
+            want_d = stamp
         need_meta = (out_ext == ".flac"
                      and (flag_cover is not None or orig_cover is not None
                           or want_c is not None or want_d is not None
