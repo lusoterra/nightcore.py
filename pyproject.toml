@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,8 @@ name = "nightcore"
 version = "2026.10.01-1"
 description = "Bit-perfect nightcore/speed/pitch audio tool (ffmpeg, sox, rubberband)"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE*"]
 requires-python = ">=3.10"
 authors = [{ name = "Lev", email = "lev@lusosterone.net" }]
 
@@ -23,6 +24,3 @@ include = ["nightcore*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-
-[tool.setuptools]
-license-files = ["LICENSE*"]
