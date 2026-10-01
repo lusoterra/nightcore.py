@@ -3,7 +3,7 @@
 This is a ~~simple~~ wrapper that creates bit-perfect Nightcore by altering the
 audio to change speed/pitch file using FFmpeg, SoX and rubberband.
 
-[demo](nightcore.cast)
+[![asciicast](https://asciinema.org/a/UqwG1b66mSsPeLCk.svg)](nightcore.cast)
 
 Lots of autism went into this to make the most pristine Nightcore possible using
 state-of-the-art, modern audio processing tools.
