@@ -1,0 +1,144 @@
+"""Pure filename/tag-string logic and output-path helpers."""
+
+from pathlib import Path
+import re
+
+from .constants import LOSSY_CODECS, _BITRATE_TAG, _DEPTH_TAG, _RATE_TOKEN, _SHIFT_TOKEN
+
+def split_shift_tags(name):
+    """Strip shift/rate/rb [...] groups; return (cleaned, speed, st, found, rb).
+
+    Removes bracket groups made only of shift tokens ([1.2x], [3.15st],
+    combined [1.2x 2.16st]), bare rate tags ([88.2kHz]), and recorded
+    rubberband extras ([rb --formant]). Quality tags ([mp3 CBR 320k LAME],
+    [16bit 44.1kHz]) and anything else stay verbatim. speed = product of
+    [Nx], st = sum of [Nst]; found tells whether any shift token was seen
+    at all; rb is the recorded extras string of the LAST [rb ...] group
+    (or None).
+    """
+    speed, st, found = 1.0, 0.0, False
+    rb_groups = []
+
+    def _strip(m):
+        nonlocal speed, st, found
+        toks = m.group(1).split()
+        if toks and toks[0] == "rb":
+            rb_groups.append(" ".join(toks[1:]))
+            return ""
+        if toks and all(
+            _SHIFT_TOKEN.match(t) or _RATE_TOKEN.match(t) for t in toks
+        ):
+            for t in toks:
+                ms = _SHIFT_TOKEN.match(t)
+                if ms is None:
+                    continue
+                found = True
+                if ms.group(2) == "x":
+                    speed *= float(ms.group(1))
+                else:
+                    st += float(ms.group(1))
+            return ""
+        return m.group(0)
+
+    cleaned = " ".join(re.sub(r"\[([^\[\]]*)\]", _strip, name).split())
+    return cleaned, speed, st, found, (rb_groups[-1] if rb_groups else None)
+
+
+def strip_quality_rate_tags(name):
+    """Remove quality/rate [...] groups; return the cleaned name.
+
+    Removes bare rate tags ([88.2kHz], same rule as split_shift_tags)
+    and quality tags in exactly the shapes this tool writes ([16bit
+    44.1kHz], [mp3 CBR 320k LAME3.100]). Anything else stays verbatim,
+    so real title brackets (e.g. [Greatest Hits], [Opus 1]) survive.
+    Used for lossy outputs, which carry no source-quality or rate tags.
+    """
+    def _strip(m):
+        toks = m.group(1).split()
+        if toks and all(_RATE_TOKEN.match(t) for t in toks):
+            return ""
+        if _BITRATE_TAG.match(m.group(0)) or _DEPTH_TAG.match(m.group(0)):
+            return ""
+        return m.group(0)
+
+    return " ".join(re.sub(r"\[([^\[\]]*)\]", _strip, name).split())
+
+
+def lossy_suffix_for(codec, bit_rate, mode=None, encoder=None):
+    """Build ' [codec [mode] bitratek [encoder]]' tag for lossy sources.
+
+    Returns '' when codec is not a known lossy codec. Mode ('VBR'/'CBR')
+    and encoder are included only when detected, e.g. [mp3 CBR 320k LAME3.100].
+    """
+    if codec not in LOSSY_CODECS:
+        return ""
+    # Normalize amr variants for display: amr_nb -> amr, etc.
+    display_codec = codec.replace("_", "-")
+    parts = [display_codec]
+    if mode:
+        parts.append(mode)
+    if bit_rate is not None:
+        kbps = round(bit_rate / 1000)
+        if kbps > 0:
+            parts.append(f"{kbps}k")
+    if encoder:
+        parts.append(encoder)
+    return " [" + " ".join(parts) + "]"
+
+
+def name_base_for(autorename, artist, original_title, fallback_stem):
+    """Output name stem: Artist - Title under --autorename (artist
+    prefix omitted without an artist tag), else the fallback stem
+    (input stem, or cleaned stem for -D)."""
+    if not autorename:
+        return fallback_stem
+    if artist:
+        return f"{artist} - " + original_title
+    return original_title
+
+
+def batch_op_dir(args, op, fmt=None):
+    """Directory for a batch operation folder, honoring --output-folder.
+
+    op is "encodes", "denightcore" or "renametag";
+    fmt appends the codec subfolder (encodes only: std-samplerate lives
+    flat inside it, denightcore/renametag take none).
+    No --output-folder: ./<op>[/<fmt>]. Existing --output-folder dir X:
+    X/<op>[/<fmt>]. Missing X: X[/<fmt>] itself (the leaf takes the op
+    folder's place). Callers mkdir (except dry-run).
+    """
+    sub = f"{op}/{fmt}" if fmt else op
+    if args.output_folder is None:
+        return Path.cwd() / sub
+    x = Path(args.output_folder)
+    if x.is_dir():
+        return x / sub
+    return x / (fmt or "")
+
+
+def single_parent(args, input_path):
+    """Output directory for single-file runs: --output-folder wins,
+    else alongside the input. Created unless dry-run."""
+    if args.output_folder is None:
+        return input_path.parent
+    parent = Path(args.output_folder)
+    if not args.dry_run:
+        parent.mkdir(parents=True, exist_ok=True)
+    return parent
+
+
+def claim_output_path(ctx, output_path):
+    """Batch-collision guard: first claim keeps the name, later ones get
+    " (2)", " (3)", ... Full paths are tracked, so distinct directories
+    never collide."""
+    claimed = ctx.setdefault("claimed_outputs", set())
+    candidate = output_path
+    n = 2
+    while candidate in claimed:
+        candidate = output_path.with_name(
+            f"{output_path.stem} ({n}){output_path.suffix}")
+        n += 1
+    claimed.add(candidate)
+    return candidate
+
+

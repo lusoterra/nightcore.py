@@ -79,4 +79,3 @@ _nightcore() {
     _filedir '@(flac|wav|aiff|aif|ape|wv|tta|alac|m4a|mp3|ogg|oga|opus|aac|wma|mpc|ac3|dts|amr|speex|mp2|lrc)'
 }
 complete -F _nightcore nightcore
-complete -F _nightcore nightcore.py

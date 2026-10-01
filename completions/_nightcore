@@ -1,4 +1,4 @@
-#compdef nightcore nightcore.py
+#compdef nightcore
 
 _nightcore() {
     local context state line
