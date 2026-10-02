@@ -10,7 +10,7 @@ import tempfile
 from .audio import cover_codec_name, extract_cover_tmp, get_audio_info, get_sample_rate
 from .backends import flac_postprocess, missing_metaflac, run_ffmpeg
 from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, STAMP_TAG, _IMAGE_MIME
-from .naming import claim_output_path, single_parent, split_shift_tags, strip_denightcore_tags, strip_quality_rate_tags
+from .naming import claim_output_path, single_parent, strip_empty_display_tags, strip_quality_rate_tags
 from .tags import apply_template_tags, backfill_stamp_settings, compute_new_title, describe_output_tags, flac_comment_wants, get_artist, get_title, read_format_tag, render_autorename, sanitize_filename, tool_stamp
 from .util import _active_outputs, batch_prefix, preview_output, say
 
@@ -49,14 +49,13 @@ def run_renametag(args, input_path, out_dir, ctx):
     stem = input_path.stem
     original_title = get_title(input_path, fallback=stem)
     artist = get_artist(input_path)
-    # Inherited title: drop stale shift/display groups ([Nx],
-    # [Nightcore Nx]) and past verdicts, but keep quality groups: -N
-    # appends no fresh suffix, so "[16bit 44.1kHz]" riding in the title
-    # is information worth preserving (filenames keep it too). Runs
-    # before the template so {title} slots inherit the cleaned title;
-    # explicit template titles still replace it verbatim afterwards.
-    original_title = strip_denightcore_tags(
-        split_shift_tags(original_title)[0])
+    # NOTE: the inherited title is kept verbatim here (only the tag
+    # template may rewrite it). -N changes no audio and appends no fresh
+    # suffix, so stripping shift tags would delete true information --
+    # stale-group cleanup happens on fresh encodes in plan.py instead.
+    # The one exception is vacant "[Nightcore ]" display groups: they
+    # carry no information at all (empty render leftovers).
+    original_title = strip_empty_display_tags(original_title)
     title_base = original_title
     ff_extra = {}
     stub_encoder = None
@@ -207,8 +206,10 @@ def run_renametag(args, input_path, out_dir, ctx):
     meta_src = input_path if keep else None
     # Temp dir alongside the input: same-name rewrites finish with
     # os.replace, which cannot cross filesystem boundaries (/tmp vs
-    # the library is the classic EXDEV case).
-    tempdir = Path(tempfile.mkdtemp(prefix="nightcore-renametag-",
+    # the library is the classic EXDEV case), so /tmp is not an option.
+    # Dot-prefixed to stay out of listings; always removed on exit
+    # (leftovers mean SIGKILL/terminal-close: safe to delete).
+    tempdir = Path(tempfile.mkdtemp(prefix=".nightcore-renametag-",
                                     dir=input_path.parent))
     try:
         cover_tmp = None

@@ -32,6 +32,18 @@ def clean_source_title(name):
         split_shift_tags(strip_denightcore_tags(name))[0])
 
 
+def strip_empty_display_tags(name):
+    """Remove vacant [Nightcore] display groups (no shift inside).
+
+    Leftover of rendering "[Nightcore {diff}]" with an empty diff: the
+    group carries no information, so unlike meaningful tags it is safe
+    to drop even where titles are otherwise kept verbatim (renametag).
+    """
+    return " ".join(
+        re.sub(r"\[nightcore\s*\]", "", name,
+               flags=re.IGNORECASE).split())
+
+
 def split_shift_tags(name):
     """Strip shift/rate/rb [...] groups; return (cleaned, speed, st, found, rb).
 
@@ -53,11 +65,13 @@ def split_shift_tags(name):
         toks = m.group(1).split()
         if toks and toks[0].lower() == "nightcore":
             # Display flavor of a shift tag ("Song [Nightcore 1.2x]"):
-            # same stripping/parsing as the bare form. Anything else
-            # after the marker (e.g. "[Nightcore's Mix]") stays verbatim.
+            # same stripping/parsing as the bare form. A bare
+            # "[Nightcore]" carries no shift at all (leftover of an
+            # empty render), so it goes too. Anything else after the
+            # marker (e.g. "[Nightcore's Mix]") stays verbatim.
             toks = toks[1:]
             if not toks:
-                return m.group(0)
+                return ""
         if toks and toks[0] == "rb":
             rb_groups.append(" ".join(toks[1:]))
             return ""

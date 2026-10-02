@@ -209,7 +209,9 @@ def test_renametag_backfills_stamp(monkeypatch, capsys, tmp_path):
     stamped = _flac_raw_fields(fixed).get("DESCRIPTION")
     assert stamped is not None and "speed=1.2x" in stamped
     title = read_format_tag(fixed, "title")
-    assert title is not None and "[1.2x]" not in title
+    # -N changes no audio, so true shift tags stay; only the empty
+    # "[Nightcore ]" artifact from the old build must be gone.
+    assert title is not None and "[Nightcore ]" not in title
 
 
 def test_denightcore_stamp_only_roundtrip(monkeypatch, capsys, tmp_path):

@@ -39,10 +39,15 @@ def test_split_shift_tags_keeps_quality_and_titles():
 
 
 def test_strip_denightcore_tags():
-    from nightcore.naming import strip_denightcore_tags
+    from nightcore.naming import strip_denightcore_tags, strip_empty_display_tags
     assert strip_denightcore_tags("song [denightcored BP] [1.2x]") == "song [1.2x]"
     assert strip_denightcore_tags("song [denightcored NBP]") == "song"
     assert strip_denightcore_tags("song [Greatest Hits]") == "song [Greatest Hits]"
+    assert strip_empty_display_tags("song [Nightcore ]") == "song"
+    assert strip_empty_display_tags("song [Nightcore]") == "song"
+    assert strip_empty_display_tags("song [Nightcore 1.2x]") == "song [Nightcore 1.2x]"
+    assert strip_empty_display_tags(
+        "song [Nightcore's Mix]") == "song [Nightcore's Mix]"
 
 
 def test_clean_source_title():
@@ -94,6 +99,9 @@ def test_split_shift_tags_nightcore_display():
     assert (cleaned, speed, st, found, rb) == ("song", 1.2, 0.0, True, None)
     cleaned, _, _, found, _ = split_shift_tags("song [Nightcore's Mix] [1.2x]")
     assert cleaned == "song [Nightcore's Mix]"
+    assert found is True
+    cleaned, _, _, found, _ = split_shift_tags("song [Nightcore ] [1.2x]")
+    assert cleaned == "song"
     assert found is True
 
 
