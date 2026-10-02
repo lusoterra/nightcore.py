@@ -2,7 +2,7 @@
 
 import re
 
-# Provenance stamp (--stamp): written to this tag on every output, and
+# Provenance stamp (--no-stamp disables): written to this tag on every output, and
 # the project URL embedded in the stamp text (also in pyproject.toml).
 STAMP_TAG = "description"
 PROJECT_URL = "https://git.lusosterone.net/lev/nightcore"

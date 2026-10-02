@@ -40,6 +40,13 @@ def test_tool_stamp_format():
     assert PROJECT_URL in stamp
 
 
+def test_tool_stamp_settings_newline():
+    stamp = tool_stamp("Settings: speed=1.2x")
+    base, _, settings = stamp.partition("\n")
+    assert base == f"Made with nightcore {__version__} ({PROJECT_URL})"
+    assert settings == "Settings: speed=1.2x"
+
+
 def test_version_flag(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["nightcore", "--version"])
     with pytest.raises(SystemExit) as exc:
@@ -48,6 +55,11 @@ def test_version_flag(monkeypatch, capsys):
     assert __version__ in capsys.readouterr().out
 
 
-def test_stamp_flag_defaults_off(monkeypatch):
+def test_no_stamp_flag_defaults_off(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["nightcore", "song.flac"])
-    assert parse_arguments().stamp is False
+    assert parse_arguments().no_stamp is False
+
+
+def test_no_stamp_flag_opt_in(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["nightcore", "song.flac", "--no-stamp"])
+    assert parse_arguments().no_stamp is True

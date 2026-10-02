@@ -10,8 +10,8 @@ import tempfile
 from .audio import cover_codec_name, extract_cover_tmp, get_audio_info
 from .backends import flac_postprocess, missing_metaflac, run_ffmpeg
 from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, STAMP_TAG, _IMAGE_MIME
-from .naming import claim_output_path, name_base_for, single_parent, strip_quality_rate_tags
-from .tags import apply_template_tags, compute_new_title, describe_output_tags, flac_comment_wants, get_artist, get_title, sanitize_filename
+from .naming import claim_output_path, single_parent, strip_quality_rate_tags
+from .tags import apply_template_tags, compute_new_title, describe_output_tags, flac_comment_wants, get_artist, get_title, render_autorename, sanitize_filename, tool_stamp
 from .util import _active_outputs, batch_prefix, preview_output, say
 
 def run_renametag(args, input_path, out_dir, ctx):
@@ -20,10 +20,11 @@ def run_renametag(args, input_path, out_dir, ctx):
     The output keeps the input's container (-F is ignored) and lands in
     out_dir (batch: ./renametag/ copies, originals stay) or alongside
     the input (single-file: a rename moves, the original is removed).
-    Names come from --autorename (Artist - Title) or the input stem,
-    with no conversion params appended; -o overrides the name. Title/tags
-    follow --tag-template/--no-delete-tags/--simple-title/--autotag
-    (suffix is empty: nothing was processed). Pictures are preserved by
+    Names come from --autorename (bare: Artist - Title; TEMPLATE: custom
+    {artist}/{title} render) or the input stem, with no conversion params
+    appended; -o overrides the name. Title/Artist follow
+    --tag-template/--no-delete-tags (suffix is
+    empty: nothing was processed). Pictures are preserved by
     mapping, replaced by --cover; opus pictures are impossible through
     ffmpeg, so those fail loudly. Same-name rewrites go through a temp
     file + atomic replace. Same-stem .lrc lyrics follow the master:
@@ -51,23 +52,33 @@ def run_renametag(args, input_path, out_dir, ctx):
     title_base = original_title
     ff_extra = {}
     stub_encoder = None
+    title_verbatim = False
     if tmpl is not None:
         (title_base, ff_extra, stub_encoder, artist,
-         original_title) = apply_template_tags(
+         original_title, title_verbatim) = apply_template_tags(
              tmpl, input_path, original_title, artist,
-             keep_missing=args.no_delete_tags)
-    stamp = ctx.get("stamp")
-    if stamp is not None:
-        # --stamp always wins, even over a template description (same
-        # rationale as conversions: explicit per-run provenance mark).
-        ff_extra[STAMP_TAG] = stamp
+             keep_missing=args.no_delete_tags,
+             slots={"diff": "", "quality": "", "resample": "",
+                    "denightcore": ""})
+    if not ctx.get("no_stamp"):
+        # Stamped by default (--no-stamp disables): renametagging changes
+        # no audio, so the stamp carries provenance only, no Settings.
+        ff_extra[STAMP_TAG] = tool_stamp()
+    stamp = ff_extra.get(STAMP_TAG)
     codec = get_audio_info(input_path)[0]
     if codec in LOSSY_CODECS:
         # Same stale-quality-title rule as conversions.
         original_title = strip_quality_rate_tags(original_title)
-    new_title = compute_new_title(args, tmpl, title_base, original_title, "")
-    name_base = name_base_for(args.autorename, artist,
-                                original_title, stem)
+    new_title = compute_new_title(tmpl, title_base, original_title, "",
+                                  title_verbatim=title_verbatim)
+    _auto = getattr(args, "autorename", None)
+    if _auto is None:
+        name_base = stem
+    elif _auto == "":
+        name_base = (f"{artist} - {original_title}" if artist
+                     else original_title)
+    else:
+        name_base = render_autorename(args, artist, original_title, stem)
     parent = (out_dir if out_dir is not None
               else single_parent(args, input_path))
     output_path = (parent
@@ -198,6 +209,15 @@ def run_renametag(args, input_path, out_dir, ctx):
         final_path = (tempdir / f"renametag{out_ext}"
                       if same_path else output_path)
         _active_outputs.add(final_path)
+        if tmpl is not None:
+            _extra = ff_extra or None
+        else:
+            # Non-template runs map source tags; the stamp rides in
+            # extra_tags explicitly.
+            _extra = {}
+            if stamp is not None:
+                _extra[STAMP_TAG] = stamp
+            _extra = _extra or None
         run_ffmpeg(input_path, final_path, None, "copy", new_title,
                    overwrite=True,
                    metadata_from=meta_src,
@@ -205,9 +225,7 @@ def run_renametag(args, input_path, out_dir, ctx):
                    cover_file=(flag_cover or
                                (cover_tmp if strip else None)),
                    strip_tags=strip,
-                   extra_tags=(ff_extra or None)
-                   if tmpl is not None else
-                   ({STAMP_TAG: stamp} if stamp is not None else None),
+                   extra_tags=_extra,
                    bitexact=True)
         if need_meta and not flac_postprocess(
                 final_path, norm_image, norm_mime,

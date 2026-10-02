@@ -1,4 +1,4 @@
-.TH NIGHTCORE 1 "2026-09-25" "nightcore" "User Commands"
+.TH NIGHTCORE 1 "2026-10-02" "nightcore" "User Commands"
 .SH NAME
 nightcore \- speed up or pitch-shift audio, losslessly
 .SH SYNOPSIS
@@ -68,8 +68,8 @@ opusenc (ffmpeg libopus fallback), AAC via qaac (ffmpeg AAC fallback with
 a quality warning) -- with quality defaults V0 (mp3), 128k (opus)
 and TVBR 91 (qaac); ffmpeg AAC has none and fails loudly unless explicit
 \fB--lossy-opts\fR are passed. User opts replace defaults wholesale.
-Rates always pass through untouched (\fB-R\fR/\fB--both\fR with lossy
-output is an error): if a weird rate is unacceptable the encoder itself
+Rates always pass through untouched (\fB-R\fR with lossy output
+is an error): if a weird rate is unacceptable the encoder itself
 fails loudly. Lossy files carry only the shift tag in filename and Title:
 no source-quality or rate tags. With a genuine \fBqaac\fR on PATH (verified via
 .IR "qaac --check" ,
@@ -90,24 +90,18 @@ Pitch-shift by semitones: alone it implies \fB-p\fR; with
 .B -n, --dry-run
 Print output filename(s), convert nothing.
 .TP
-.B --simple-title \fR[\fITEXT\fR]
-Keep the Title tag free of script-added \fI[...]\fR groups (filenames
-keep them); optional \fITEXT\fR is appended after a space, e.g.
-\fI--simple-title="(Nightcore)"\fR. Bare \fI--simple-title\fR goes last
-or uses \fI=\fR, else it eats the input filename as its TEXT.
-.TP
-.B --autotag
-Append the bracket tags ([1.2x], rate, ...) to the Title tag
-(default: leave Title as-is; --simple-title overrides this).
-.TP
-.B --autorename
-Rename output to 'Artist - Title [tags]' from tags
-(default: keep the input filename, append params).
+.B --autorename \fR[\fITEMPLATE\fR]
+Rename output via a filename-stem template with bare \fI{artist} {title}
+{diff} {quality} {resample} {denightcore}\fR slots, e.g.
+\fI--autorename="{artist} - {title} [{diff}]"\fR. Bare
+\fI--autorename\fR keeps the legacy \fIArtist - Title [tags]\fR; default
+keeps the input filename and appends params. A bare flag goes last or
+uses \fI=\fR, else it eats the input filename as its template.
 .TP
 .B -o, --output \fIFILE\fR
 Override the output filename (extension required, e.g. \fI-o mix.mp3\fR;
-used verbatim). Single-file runs only: \fI--batch\fR + \fI-o\fR and
-\fI--both\fR + \fI-o\fR are errors.
+used verbatim). Single-file runs only: \fI--batch\fR + \fI-o\fR is
+an error.
 .TP
 .B --output-folder \fIDIR\fR
 Base for batch folders (\fIencodes/denightcore/renametag/std-samplerate\fR,
@@ -140,16 +134,27 @@ cannot be preserved without re-encoding, so those fail loudly.
 With \fI--tag-template\fR: keep source tags not listed in the template
 (default: strip them, template only). Needs a template.
 .TP
-.B --stamp
-Stamp outputs with a \fIMade with nightcore <version> (<url>)\fR
-DESCRIPTION tag. Overrides any template description; FLAC outputs then
-require metaflac.
+.B --no-stamp
+Skip the DESCRIPTION provenance stamp. By default every output is
+stamped \fIMade with nightcore <version> (<url>)\fR plus a \fISettings:\fR
+second line carrying the encode parameters (speed, semitones, resample
+target, format, source fingerprint), so a renamed file still carries
+enough info to reverse it with \fI-D\fR. Overrides any template
+description; FLAC outputs then require metaflac.
 .TP
 .B --tag-template \fIFILE\fR
 Apply a tag template file: one \fIkey="value"\fR entry per tag (values
 may span lines). Empty or bare values keep the source tag; tags missing
 from the file are stripped from outputs unless \fI--no-delete-tags\fR
-is given. The computed title suffix is still appended. Template \fIcomment\fR lands in COMMENT (ffmpeg alone
+is given. \fItitle=\fR and \fIartist=\fR values may use bare
+\fI{title} {artist} {diff} {quality} {resample} {denightcore}\fR slots
+(brackets are yours; \fI{title}\fR/\fI{artist}\fR mean the source tags;
+\fI{diff(N)}\fR rounds the shift for display, e.g. \fI{diff(2)}\fR),
+e.g. \fItitle="{title} [Nightcore {diff(2)}]"\fR. An explicit
+\fItitle=\fR is used verbatim for every file; without one, titles
+default to \fITitle [Nightcore diff]\fR (rounded to 2 decimals, full
+precision stays in the filename and stamp). All other
+values stay literal. Template \fIcomment\fR lands in COMMENT (ffmpeg alone
 would file it as DESCRIPTION) and \fIencoder\fR stubs are honored on
 FLAC; muxer-written encoder tags are stripped by default (lossy outputs
 without a template keep the encoder's own tags instead).
@@ -197,15 +202,23 @@ Calculator, no conversion. One value = speed factor; two values = peak
 frequencies (original, pitched). Prints semitones, cents, speed factor.
 .TP
 .B -D, --denightcore
-Undo from filename tags: reads [Nx]/[Nst] shift tags (including combined
-forms like [1.2x 2.16st]), applies the inverse shift, and removes those
-tags. Quality tags stay intact. Fails if no shift tags are found (batch
-runs skip untagged files with a tally instead). Output must be lossless:
-lossy \fI-F\fR is rejected, so tracks never lose quality over time.
-Batch outputs land in \fI./denightcore/[format]/\fR. Each file reports its
-verdict: pure sample-rate undos are bit-perfect, while pitch inversion
-(rubberband), resampling (original rate unrecoverable), or a lossy
-source are called out with reasons.
+Undo from the stamp tag only: inverts the shift recorded in the input's
+\fISettings:\fR DESCRIPTION line. Filenames are untrusted (users rename
+them) and are never parsed, so an unstamped file fails (batch runs skip
+untagged files with a tally instead). Pre-stamp files with only filename
+tags cannot be restored this way (use \fI-s/-r\fR manually).
+Names rebuild from tags as \fIArtist - Title [quality] [denightcore
+BP]\fR or \fI[denightcored NBP]\fR (artist prefix omitted without an
+artist tag); a custom \fI--autorename\fR template is honored instead.
+\fI--tag-template\fR is ignored (restoring, not curating). The output
+stamp records the undo, so a second \fI-D\fR on it refuses (nothing left
+to invert). Output must be lossless: lossy \fI-F\fR is rejected, so tracks
+never lose quality over time. Batch outputs land in
+\fI./denightcore/[format]/\fR. Bit-perfect needs a pure sample-rate
+inversion -- no pitch resynthesis, no resampling now or in the forward
+job, lossless in and out; anything else reports NBP with reasons.
+Nightcore -> denightcore cycles of pure speedups are bit-exact and
+stable; pitch/resample jobs lose a generation per cycle.
 .TP
 .B --speed-diff \fIST\fR
 Calculator, no conversion: semitones to speed factor.

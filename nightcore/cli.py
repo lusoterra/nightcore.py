@@ -15,7 +15,7 @@ from .constants import AUDIO_EXTS, COVER_ART_EXTS, COVER_ART_NAMES, LOSS_DEFAULT
 from .convert import run_conversion
 from .naming import batch_op_dir
 from .renametag import run_renametag
-from .tags import parse_tag_template, tool_stamp
+from .tags import parse_tag_template
 from .util import _help_formatter, _on_sigint, missing_tools, say
 
 def parse_arguments():
@@ -133,32 +133,19 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--simple-title",
+        "--autorename",
         type=str,
         nargs="?",
         const="",
         default=None,
-        metavar="TEXT",
-        help="Keep the Title tag free of script-added [...] groups\n"
-             "(filenames keep them); optional TEXT is appended after\n"
-             "a space, e.g. --simple-title=\"(Nightcore)\"\n"
-             "(bare flag goes last, or use --simple-title=)"
-    )
-
-    parser.add_argument(
-        "--autotag",
-        action="store_true",
-        default=False,
-        help="Append the bracket tags ([1.2x], rate, ...) to the Title tag\n"
-             "(default: leave Title as-is; --simple-title overrides this)"
-    )
-
-    parser.add_argument(
-        "--autorename",
-        action="store_true",
-        default=False,
-        help="Rename output to 'Artist - Title [tags]' from tags\n"
-             "(default: keep the input filename, append params)"
+        metavar="TEMPLATE",
+        help="Rename output via a filename-stem template with bare\n"
+             "{artist} {title} {diff} {quality} {resample} {denightcore}\n"
+             "slots (bare flag keeps legacy 'Artist - Title [tags]';\n"
+             "default keeps the input filename, appends params;\n"
+             "denightcore outputs default to\n"
+             "'Artist - Title [quality] [denightcored BP/NBP]';\n"
+             "bare flag goes last, or use --autorename=)"
     )
 
     parser.add_argument(
@@ -170,12 +157,14 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--stamp",
+        "--no-stamp",
         action="store_true",
         default=False,
-        help="Stamp outputs with a 'Made with nightcore <version> (<url>)'\n"
-             "DESCRIPTION tag (overrides any template description;\n"
-             "FLAC outputs then require metaflac)"
+        help="Skip the DESCRIPTION provenance stamp (default: every output\n"
+             "is stamped 'Made with nightcore <version> (<url>)' plus a\n"
+             "Settings line with the encode parameters, so a renamed file\n"
+             "still carries enough info to reverse it; overrides any\n"
+             "template description; FLAC outputs then require metaflac)"
     )
 
     parser.add_argument(
@@ -224,7 +213,13 @@ def parse_arguments():
         help=(
             "Tag template file (key=\"value\" lines, multiline ok).\n"
             "Empty/bare values keep the source tag; tags missing\n"
-            "from the file are stripped from outputs."
+            "from the file are stripped from outputs.\n"
+            "title=/artist= values may use bare {title} {artist} {diff}\n"
+            "{quality} {resample} {denightcore} slots (brackets are yours;\n"
+            "{diff(N)} rounds for display, e.g. {diff(2)}), e.g.\n"
+            "title=\"{title} [Nightcore {diff(2)}]\". An explicit title=\n"
+            "is used verbatim; otherwise titles default to\n"
+            "\"Title [Nightcore diff]\"."
         )
     )
 
@@ -260,8 +255,12 @@ def parse_arguments():
         action="store_true",
         default=False,
         help=(
-            "Undo from filename tags: reads [Nx]/[Nst], removes them\n"
-            "Keeps quality tags; fails if no shift tags found"
+            "Undo from the stamp tag only (filenames are untrusted):\n"
+            "inverts the stamped shift. Fails without a usable stamp.\n"
+            "Names rebuild from tags as 'Artist - Title [quality]\n"
+            "[denightcored BP/NBP]' (--autorename template honored).\n"
+            "--tag-template is ignored; the stamp records the undo.\n"
+            "BP needs a pure rate inversion (no pitch/resample/lossy)"
         )
     )
 
@@ -596,7 +595,7 @@ def main():
         "cover_flag": cover_flag,
         "lossy_opts": lossy_opts,
         "backend": backend,
-        "stamp": tool_stamp() if args.stamp else None,
+        "no_stamp": args.no_stamp,
         "speed": speed,
         "combo": combo,
         "st_signed": st_signed,

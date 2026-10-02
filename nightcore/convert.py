@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Any
+import re
 import shutil
 import subprocess
 import sys
@@ -11,9 +12,9 @@ from .audio import cover_codec_name, extract_cover_tmp, format_rate, sample_is_f
 from .backends import find_qaac, flac_postprocess, missing_metaflac, run_ffmpeg, run_lame, run_opusenc, run_qaac_alac, run_rubberband, run_sox_rate, tame_hot_wav
 from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, OUTPUT_FORMATS, STALE_TAGS, STAMP_TAG, _IMAGE_MIME
 from .lrc import run_lrc
-from .naming import claim_output_path, name_base_for, single_parent, split_shift_tags
+from .naming import claim_output_path, single_parent, split_shift_tags, strip_denightcore_tags, strip_quality_rate_tags
 from .plan import resolve_audio_naming
-from .tags import compute_new_title, describe_output_tags, flac_comment_wants, read_all_tags, sanitize_filename
+from .tags import build_stamp_settings, compute_new_title, describe_output_tags, flac_comment_wants, parse_stamp_shifts, read_all_tags, read_format_tag, render_autorename, sanitize_filename, tool_stamp
 from .util import _active_outputs, batch_prefix, preview_output, say
 
 def run_conversion(args, input_path, out_dir, ctx):
@@ -42,10 +43,12 @@ def run_conversion(args, input_path, out_dir, ctx):
     if input_path.suffix.lower() == ".lrc":
         return run_lrc(args, input_path, out_dir, ctx)
 
-    # -D reads the shift back out of the filename tags ([1.2x], [3.15st],
-    # combined [1.2x 2.16st]) instead of taking -s/-S/-p/-r.
+    # -D inverts the shift recorded in the input's stamp DESCRIPTION
+    # (speed=+semitones= Settings line) instead of taking -s/-S/-p/-r.
+    # Filenames are untrusted (users rename them), so they are never
+    # parsed; without a usable stamp there is nothing to undo.
     d_speed, d_st, d_seq = 1.0, 0.0, 1.0
-    cleaned_stem = None
+    denight_stamp = None
     if args.denightcore:
         for flag, bad in (("-s/--speed", args.speed != 1.0),
                           ("-S/--semitones", eff_semitones is not None),
@@ -53,31 +56,38 @@ def run_conversion(args, input_path, out_dir, ctx):
                           ("-r/--reciprocal", args.reciprocal)):
             if bad:
                 print(f"Error: --denightcore cannot be combined with {flag} "
-                      "(it reads the shift from filename tags)", file=sys.stderr)
+                      "(it reads the shift from the stamp tag)", file=sys.stderr)
                 return 1
-        cleaned_stem, d_speed, d_st, found, _ = split_shift_tags(
-            input_path.stem)
-        if not found:
+        denight_stamp = read_format_tag(input_path, "description")
+        stamped = parse_stamp_shifts(denight_stamp)
+        if stamped is not None:
+            d_speed, d_st = stamped
+            say(f"  stamp: undoing shift "
+                f"{d_speed!r}x {d_st!r}st from DESCRIPTION")
+        if stamped is None or (d_speed == 1.0 and d_st == 0.0):
             if out_dir is not None:
-                # Batch denightcore: untagged files are skipped with a
+                # Batch denightcore: unstamped files are skipped with a
                 # tally, not failed (a mixed folder shouldn't abort).
                 print(f"Skipping {input_path.name} "
-                      "(no shift tags for -D)", file=sys.stderr)
+                      "(no stamp Settings for -D)", file=sys.stderr)
                 ctx["skipped_notags"] = ctx.get("skipped_notags", 0) + 1
                 return 0
-            print(f"Error: no [Nx] or [Nst] shift tags in '{input_path.name}'; "
-                  "--denightcore reads the amount from filename tags like "
-                  "[1.2x] or [3.15st], e.g. nightcore 'Song [1.2x].flac' -D",
+            print(f"Error: no usable stamp Settings in '{input_path.name}'; "
+                  "--denightcore restores files stamped by nightcore "
+                  "(filenames alone are not trusted, renames are free)",
                   file=sys.stderr)
             return 1
         speed = 1.0 / d_speed
         d_seq = speed_from_semitones(d_st)
+        if args.tag_template is not None:
+            print("Warning: --tag-template ignored in denightcore mode "
+                  "(restoring, not curating)", file=sys.stderr)
     naming = resolve_audio_naming(
-        args, tmpl, input_path, speed,
+        args, None if args.denightcore else tmpl, input_path, speed,
         combo, st_signed, combo_seq, eff_semitones,
         denight=(None if not args.denightcore else {
             "d_speed": d_speed, "d_st": d_st, "d_seq": d_seq,
-            "cleaned_stem": cleaned_stem,
+            "stamp_text": denight_stamp or "",
         }))
     if naming is None:
         print("Error: could not determine input sample rate", file=sys.stderr)
@@ -92,7 +102,10 @@ def run_conversion(args, input_path, out_dir, ctx):
     pitch_rb = naming["pitch_rb"]
     weird_suffix = naming["weird_suffix"]
     standard_suffix = naming["standard_suffix"]
-    cleaned_stem = naming["cleaned_stem"]
+    diff_bare = naming["diff_bare"]
+    quality_bare = naming["quality_bare"]
+    resample_bare = naming["resample_bare"]
+    denightcore_bare = naming["denightcore_bare"]
     out_ext = naming["out_ext"]
     out_codec = naming["out_codec"]
     depth_fmt = naming["depth_fmt"]
@@ -100,18 +113,54 @@ def run_conversion(args, input_path, out_dir, ctx):
     artist = naming["artist"]
     original_title = naming["original_title"]
     title_base = naming["title_base"]
+    title_verbatim = naming["title_verbatim"]
     ff_extra = naming["ff_extra"]
     stub_encoder = naming["stub_encoder"]
-    stamp = ctx.get("stamp")
-    if stamp is not None:
-        # --stamp always wins, even over a template description: it is
-        # an explicit per-run provenance mark, not curated metadata.
-        ff_extra[STAMP_TAG] = stamp
+    # Provenance stamp: on by default (--no-stamp disables). The Settings
+    # line carries the effective transform so a renamed file still knows
+    # how to reverse itself via -D. Always wins over a template
+    # description: explicit per-run mark, not curated metadata.
+    if not ctx.get("no_stamp"):
+        if args.denightcore:
+            # Record what was undone (forward shift) plus the verdict.
+            # The denightcore= marker keeps this stamp from ever feeding
+            # a second -D fallback parse (see parse_stamp_shifts).
+            stamp_settings = build_stamp_settings(
+                speed=d_speed, semitones=d_st, pitch_mode=pitch_mode,
+                target_rate=target_rate, out_format=args.format,
+                lossy_opts=(), source_rate=sample_rate, source_bits=bits,
+                source_codec=codec, denightcore=denightcore_bare.split()[-1])
+        else:
+            # Forward shift in filename-tag terms ([Nx] product and [Nst]
+            # sum), so -D can invert from the stamp exactly like from the
+            # name. NOTE: pitch-only jobs must record speed 1.0 (no rate
+            # reinterpretation to undo); the internal `speed` variable
+            # carries a pitch-derived factor there, which would wrongly
+            # asetrate-invert on the way back.
+            if combo:
+                f_speed, f_st = speed, st_signed
+            elif pitch_mode:
+                f_speed = 1.0
+                f_st = (st_signed if st_signed is not None
+                        else semitones_from_speed(speed))
+            else:
+                f_speed, f_st = speed, 0.0
+            stamp_settings = build_stamp_settings(
+                speed=f_speed, semitones=f_st,
+                pitch_mode=pitch_mode, target_rate=target_rate,
+                out_format=args.format,
+                lossy_opts=(lossy_opts if is_lossy_output else ()),
+                source_rate=sample_rate, source_bits=bits,
+                source_codec=codec)
+        ff_extra[STAMP_TAG] = tool_stamp(stamp_settings)
+    stamp = ff_extra.get(STAMP_TAG)
 
     if (not args.denightcore and not pitch_mode and speed == 1.0
             and target_rate is None
             and input_path.suffix.lower() == out_ext
-            and tmpl is None and cover_flag is None):
+            and tmpl is None and cover_flag is None
+            and ctx.get("no_stamp")
+            and getattr(args, "autorename", None) is None):
         print(
             "Error: nothing to do (speed is 1 and no resampling requested)",
             file=sys.stderr,
@@ -201,31 +250,83 @@ def run_conversion(args, input_path, out_dir, ctx):
     # Output filenames carry the params suffix ([speed|st] [<codec>
     # <bitrate>k] [<rate>]) appended to a base. --autorename builds the
     # base from tags ("Artist - Title", artist prefix omitted when the
-    # source has no artist tag); by default the base is the input's own
-    # stem. The Title tag follows --autotag/--simple-title, not this.
+    # source has no artist tag) or from a user TEMPLATE with bare
+    # {artist}/{title}/{diff}/{quality}/{resample}/{denightcore} slots;
+    # by default the base is the input's own stem. The Title tag
+    # follows the tag template (default "Title [Nightcore diff]");
+    # the Artist tag always rides through untouched (source-mapped).
     # Names are sanitized for Linux/Windows-safe filenames. Preserve
-    # input directory. -D instead strips shift/rate tags off the input's
-    # own name and title, keeping quality tags verbatim.
+    # input directory. -D rebuilds names from tags (Artist - Title
+    # [quality] [denightcored BP/NBP]); the filename is never trusted.
     if args.denightcore:
-        original_title = split_shift_tags(original_title)[0]
-        name_base = cleaned_stem
-        if name_base is None:
-            print("Error: could not determine denightcored name",
-                  file=sys.stderr)
-            return 1
+        # Restored title: the title tag still carries the old shift and
+        # display groups (and possibly stale quality/rate groups) from
+        # when the file was nightcored; strip them all. The fresh
+        # [denightcored BP/NBP] verdict is added by compute_new_title.
+        original_title = strip_denightcore_tags(strip_quality_rate_tags(
+            split_shift_tags(original_title)[0]))
+        _auto = getattr(args, "autorename", None)
+        if _auto is not None and _auto != "":
+            name_base = render_autorename(
+                args, artist, original_title, input_path.stem,
+                diff=diff_bare, quality=quality_bare,
+                resample=resample_bare, denightcore=denightcore_bare)
+            # Custom TEMPLATE already carries its own slots.
+            jobs = [("", plan) for _, plan in jobs]
+        else:
+            base = (f"{artist} - {original_title}" if artist
+                    else original_title)
+            if not base.strip():
+                base = strip_denightcore_tags(input_path.stem)
+            quals = f" [{quality_bare}]" if quality_bare else ""
+            rate = f" [{resample_bare}]" if resample_bare else ""
+            jobs = [(f"{quals}{rate} [{denightcore_bare}]", plan)
+                    for _, plan in jobs]
+            name_base = base
+    elif getattr(args, "autorename", None) is None:
+        name_base = strip_denightcore_tags(input_path.stem)
+    elif args.autorename == "":
+        if artist:
+            name_base = f"{artist} - " + original_title
+        else:
+            name_base = original_title
     else:
-        name_base = name_base_for(args.autorename, artist,
-                                  original_title, input_path.stem)
-    if out_dir is not None:
-        parent = out_dir
-    else:
-        parent = single_parent(args, input_path)
-    outputs = []
-    for suffix, _ in jobs:
-        outputs.append((
-            suffix,
-            parent / (sanitize_filename(name_base + suffix) + out_ext),
-        ))
+        name_base = render_autorename(
+            args, artist, original_title, input_path.stem,
+            diff=diff_bare, quality=quality_bare, resample=resample_bare,
+            denightcore=denightcore_bare)
+        # Custom TEMPLATE already carries its own slots: suffixes below
+        # must not be appended again.
+        if out_dir is not None:
+            parent = out_dir
+        else:
+            parent = single_parent(args, input_path)
+        outputs = [(suffix, parent / (sanitize_filename(name_base)
+                                      + out_ext)) for suffix, _ in jobs]
+        if out_dir is not None:
+            outputs = [(suffix, claim_output_path(ctx, output_path))
+                       for suffix, output_path in outputs]
+        if args.output is not None and out_dir is None:
+            outputs = [(suffix, parent / args.output)
+                       for suffix, _ in outputs]
+        for suffix, output_path in outputs:
+            if output_path == input_path:
+                print("Error: output would overwrite input, aborting",
+                      file=sys.stderr)
+                return 1
+        # Skip past the legacy suffix-append path below.
+        name_base = None
+    if name_base is not None:
+        if out_dir is not None:
+            parent = out_dir
+        else:
+            parent = single_parent(args, input_path)
+        outputs = []
+        for suffix, _ in jobs:
+            outputs.append((
+                suffix,
+                parent / (sanitize_filename(name_base + suffix) + out_ext),
+            ))
 
     if out_dir is not None:
         # Batch mode funnels many inputs into one directory, so
@@ -249,8 +350,10 @@ def run_conversion(args, input_path, out_dir, ctx):
     if args.dry_run:
         be = backend.get("kind") if backend else None
         for suffix, output_path in outputs:
-            title = compute_new_title(args, tmpl, title_base,
-                                      original_title, suffix)
+            title = compute_new_title(
+                tmpl, title_base, original_title, suffix,
+                diff=diff_bare, denightcore=denightcore_bare,
+                title_verbatim=title_verbatim)
             flag_c = (cover_flag if (cover_flag is not None
                                      and out_ext in COVER_FORMATS)
                       else None)
@@ -556,8 +659,10 @@ def run_conversion(args, input_path, out_dir, ctx):
                                  else "image/png")
 
             for (suffix, plan), (_, output_path) in zip(jobs, outputs):
-                new_title = compute_new_title(args, tmpl, title_base,
-                                                original_title, suffix)
+                new_title = compute_new_title(
+                    tmpl, title_base, original_title, suffix,
+                    diff=diff_bare, denightcore=denightcore_bare,
+                    title_verbatim=title_verbatim)
                 kind = plan[0]
                 if kind == "direct":
                     desc = ("speedup" if plan[1] is not None else "convert")
@@ -705,8 +810,10 @@ def run_conversion(args, input_path, out_dir, ctx):
                 shutil.rmtree(tempdir, ignore_errors=True)
         if args.denightcore:
             # Bit-perfect verdict for the undo: a pure sample-rate
-            # speedup inverts bit-exactly (lossless, no resampling);
-            # anything else degrades, with stacked reasons.
+            # speedup inverts bit-exactly (lossless, no resampling
+            # anywhere); anything else degrades, with stacked reasons.
+            # Must match denightcore_verdict() in plan.py, which names
+            # the output files.
             bad = []
             if d_st != 0.0:
                 bad.append("pitch inversion is lossy "
@@ -714,10 +821,17 @@ def run_conversion(args, input_path, out_dir, ctx):
             if target_rate is not None:
                 bad.append(f"resampled to {format_rate(target_rate)} "
                            "(original rate unrecoverable)")
+            if (denight_stamp or "") and "resample=" in denight_stamp:
+                bad.append("forward job was resampled "
+                           "(original rate unrecoverable)")
             if is_lossy_output:
                 bad.append(f"re-encoded to {args.format} (lossy)")
             if codec in LOSSY_CODECS:
                 bad.append(f"source is lossy ({codec})")
+            _fm = re.search(r"source-codec=(\S+)", denight_stamp or "")
+            if (_fm is not None
+                    and _fm.group(1).lower() in LOSSY_CODECS):
+                bad.append(f"forward source was lossy ({_fm.group(1)})")
             if bad:
                 print(f"Warning: denightcore of {input_path.name} is NOT "
                       f"bit-perfect: {'; '.join(bad)}", file=sys.stderr)

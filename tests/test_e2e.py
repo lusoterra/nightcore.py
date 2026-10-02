@@ -55,10 +55,17 @@ def _flac_raw_fields(path):
         check=True, capture_output=True, text=True,
     ).stdout
     fields = {}
+    last_key = None
     for line in out.splitlines():
         m = re.match(r"\s*comment\[\d+\]:\s*([^=]+)=(.*)$", line)
         if m:
-            fields[m.group(1)] = m.group(2)
+            last_key = m.group(1)
+            fields[last_key] = m.group(2)
+        elif (last_key is not None and line
+                and not line.startswith((" ", "METADATA"))):
+            # Multiline values (e.g. the stamp's Settings second line)
+            # print as bare continuation lines: fold them back.
+            fields[last_key] += "\n" + line.strip()
     return fields
 
 
@@ -76,11 +83,62 @@ def test_stamp_plain_convert(monkeypatch, capsys, tmp_path):
     out = tmp_path / "stamped.flac"
     rc, _ = _run(
         monkeypatch, capsys,
-        [str(FIXTURE), "-s", "1.2", "--stamp", "-o", str(out)],
+        [str(FIXTURE), "-s", "1.2", "-o", str(out)],
     )
     assert rc == 0
     assert out.is_file()
-    assert _flac_raw_fields(out).get("DESCRIPTION") == tool_stamp()
+    stamped = _flac_raw_fields(out).get("DESCRIPTION")
+    assert stamped is not None
+    assert stamped.startswith(tool_stamp() + "\n")
+    assert "speed=1.2x" in stamped
+
+
+def test_no_stamp_disables(monkeypatch, capsys, tmp_path):
+    _require_fixture()
+    _require_tools("ffmpeg", "ffprobe", "metaflac")
+    out = tmp_path / "unstamped.flac"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(FIXTURE), "-s", "1.2", "--no-stamp", "-o", str(out)],
+    )
+    assert rc == 0
+    stamped = _flac_raw_fields(out).get("DESCRIPTION") or ""
+    assert not stamped.startswith("Made with nightcore ")
+
+
+def test_default_title_is_diff_only(monkeypatch, capsys, tmp_path):
+    _require_fixture()
+    _require_tools("ffmpeg", "ffprobe", "metaflac")
+    out = tmp_path / "titled.flac"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(FIXTURE), "-s", "1.2", "-o", str(out)],
+    )
+    assert rc == 0
+    title = read_format_tag(out, "title")
+    assert title is not None
+    assert "[Nightcore 1.2x]" in title
+    assert "16bit" not in title and "kHz" not in title.replace(
+        "[Nightcore 1.2x]", "")
+
+
+def test_template_title_slots_full_provenance(monkeypatch, capsys, tmp_path):
+    _require_fixture()
+    _require_tools("ffmpeg", "ffprobe", "metaflac")
+    tmpl = tmp_path / "slots.tmpl"
+    tmpl.write_text('title="{title} [{diff}] [{quality}]"\n',
+                    encoding="utf-8")
+    out = tmp_path / "full.flac"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(FIXTURE), "-s", "1.2",
+         "--tag-template", str(tmpl), "-o", str(out)],
+    )
+    assert rc == 0
+    title = read_format_tag(out, "title")
+    assert title is not None
+    assert "[1.2x]" in title
+    assert "bit" in title or "kHz" in title
 
 
 def test_stamp_survives_stripping_template(monkeypatch, capsys, tmp_path):
@@ -91,14 +149,16 @@ def test_stamp_survives_stripping_template(monkeypatch, capsys, tmp_path):
     out = tmp_path / "stripped.flac"
     rc, _ = _run(
         monkeypatch, capsys,
-        [str(FIXTURE), "-s", "1.2", "--stamp",
+        [str(FIXTURE), "-s", "1.2",
          "--tag-template", str(tmpl), "-o", str(out)],
     )
     assert rc == 0
     # Template applied (everything else stripped)...
     assert read_format_tag(out, "artist") == "Stamp Artist"
-    # ...but the explicit stamp rode through the stripping.
-    assert _flac_raw_fields(out).get("DESCRIPTION") == tool_stamp()
+    # ...but the stamp rode through the stripping.
+    stamped = _flac_raw_fields(out).get("DESCRIPTION")
+    assert stamped is not None
+    assert stamped.startswith(tool_stamp() + "\n")
 
 
 def _sine_flac(path, seconds=3):
@@ -120,11 +180,48 @@ def test_opus_stamp_readback_native(monkeypatch, capsys, tmp_path):
     out = tmp_path / "tone.opus"
     rc, _ = _run(
         monkeypatch, capsys,
-        [str(src), "-s", "1.2", "--stamp", "-F", "opus",
+        [str(src), "-s", "1.2", "-F", "opus",
          "--lossy-opts=--bitrate 64", "-o", str(out)],
     )
     assert rc == 0
     fields = native_format_tags(out)
     assert fields is not None
-    assert fields.get("description") == tool_stamp()
-    assert fields.get("title") == "tone"
+    assert fields.get("description", "").startswith(tool_stamp())
+    assert fields.get("title") == "tone [Nightcore 1.2x]"
+
+
+def test_denightcore_stamp_only_roundtrip(monkeypatch, capsys, tmp_path):
+    # -D trusts the stamp, not the filename: the nightcored file is
+    # renamed to a tagless name first, then restored.
+    _require_fixture()
+    _require_tools("ffmpeg", "ffprobe", "metaflac")
+    work = tmp_path / "work.flac"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(FIXTURE), "-s", "1.2", "-o", str(work)],
+    )
+    assert rc == 0
+    renamed = tmp_path / "totally renamed.flac"
+    work.rename(renamed)
+    rc, _ = _run(monkeypatch, capsys, [str(renamed), "-D", "-y"])
+    assert rc == 0
+    outs = sorted(tmp_path.glob("*denightcored BP*.flac"))
+    assert len(outs) == 1
+    title = read_format_tag(outs[0], "title")
+    assert title is not None and title.endswith("[denightcored BP]")
+    assert "[1.2x]" not in title and "Nightcore" not in title
+
+
+def test_denightcore_needs_stamp(monkeypatch, capsys, tmp_path):
+    # An unstamped file with shift-looking filename tags is refused:
+    # filenames alone are not trusted.
+    _require_tools("ffmpeg", "ffprobe")
+    src = tmp_path / "tone.flac"
+    _sine_flac(src)
+    tagged = tmp_path / "tone [1.2x].flac"
+    src.rename(tagged)
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(tagged), "-D", "--no-stamp", "-o", str(tmp_path / "out.flac")],
+    )
+    assert rc == 1
