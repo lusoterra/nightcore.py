@@ -41,11 +41,17 @@ def say(msg):
 
 
 def batch_prefix(ctx):
-    """'[i/N] ' file progress in batch mode, else ''."""
+    """'[i/N] ' file progress in batch mode, else ''.
+
+    Both numbers are zero-padded to the width of the total, so columns
+    stay aligned: [001/200], not [1/200].
+    """
     total = ctx.get("batch_total")
     if not total:
         return ""
-    return f"[{ctx.get('batch_index', 0) + 1}/{total}] "
+    width = len(str(total))
+    return (f"[{ctx.get('batch_index', 0) + 1:0{width}d}"
+            f"/{total:0{width}d}] ")
 
 
 def _on_sigint(signum, frame):

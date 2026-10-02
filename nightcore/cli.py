@@ -202,7 +202,9 @@ def parse_arguments():
         help="Renametag mode: rewrite tags and rename via stream copy,\n"
              "no audio processing (batch copies to ./renametag/,\n"
              "single-file renames alongside). -F is ignored (container\n"
-             "kept); -s/-S/-p/-r/-R/-D are errors"
+             "kept); -s/-S/-p/-r/-R/-D are errors. A stamp without\n"
+             "Settings gains them backfilled from filename tags when\n"
+             "present (stamps with Settings are preserved as-is)"
     )
 
     parser.add_argument(

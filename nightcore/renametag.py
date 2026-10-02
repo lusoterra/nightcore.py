@@ -7,11 +7,11 @@ import subprocess
 import sys
 import tempfile
 
-from .audio import cover_codec_name, extract_cover_tmp, get_audio_info
+from .audio import cover_codec_name, extract_cover_tmp, get_audio_info, get_sample_rate
 from .backends import flac_postprocess, missing_metaflac, run_ffmpeg
 from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, STAMP_TAG, _IMAGE_MIME
-from .naming import claim_output_path, single_parent, strip_quality_rate_tags
-from .tags import apply_template_tags, compute_new_title, describe_output_tags, flac_comment_wants, get_artist, get_title, render_autorename, sanitize_filename, tool_stamp
+from .naming import claim_output_path, single_parent, split_shift_tags, strip_denightcore_tags, strip_quality_rate_tags
+from .tags import apply_template_tags, backfill_stamp_settings, compute_new_title, describe_output_tags, flac_comment_wants, get_artist, get_title, read_format_tag, render_autorename, sanitize_filename, tool_stamp
 from .util import _active_outputs, batch_prefix, preview_output, say
 
 def run_renametag(args, input_path, out_dir, ctx):
@@ -49,6 +49,14 @@ def run_renametag(args, input_path, out_dir, ctx):
     stem = input_path.stem
     original_title = get_title(input_path, fallback=stem)
     artist = get_artist(input_path)
+    # Inherited title: drop stale shift/display groups ([Nx],
+    # [Nightcore Nx]) and past verdicts, but keep quality groups: -N
+    # appends no fresh suffix, so "[16bit 44.1kHz]" riding in the title
+    # is information worth preserving (filenames keep it too). Runs
+    # before the template so {title} slots inherit the cleaned title;
+    # explicit template titles still replace it verbatim afterwards.
+    original_title = strip_denightcore_tags(
+        split_shift_tags(original_title)[0])
     title_base = original_title
     ff_extra = {}
     stub_encoder = None
@@ -61,9 +69,23 @@ def run_renametag(args, input_path, out_dir, ctx):
              slots={"diff": "", "quality": "", "resample": "",
                     "denightcore": ""})
     if not ctx.get("no_stamp"):
-        # Stamped by default (--no-stamp disables): renametagging changes
-        # no audio, so the stamp carries provenance only, no Settings.
-        ff_extra[STAMP_TAG] = tool_stamp()
+        # Stamped by default (--no-stamp disables). A stamp that already
+        # carries a Settings line is preserved byte-identical (retags
+        # change no audio, so the transforming run owns the provenance).
+        # Otherwise the shift is recovered from the filename tags when
+        # present -- old stamp-less library files gain a real stamp and
+        # become -D-able -- else a bare provenance stamp is written.
+        existing = read_format_tag(input_path, STAMP_TAG)
+        _, sep, rest = (existing or "").partition("\n")
+        if sep and rest.strip().startswith("Settings:"):
+            ff_extra[STAMP_TAG] = existing
+        else:
+            _info = get_audio_info(input_path)
+            reco = backfill_stamp_settings(
+                stem, sample_rate=get_sample_rate(input_path),
+                bits=_info[2], codec=_info[0],
+                out_format=out_ext.lstrip("."))
+            ff_extra[STAMP_TAG] = tool_stamp(reco)
     stamp = ff_extra.get(STAMP_TAG)
     codec = get_audio_info(input_path)[0]
     if codec in LOSSY_CODECS:

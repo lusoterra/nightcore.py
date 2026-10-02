@@ -129,6 +129,9 @@ with no conversion params appended. Speed/pitch/resample flags
 (\fI-s -S -p -r -R -D\fR) are errors; a same-name
 rewrite goes through a temp file plus atomic replace. Opus pictures
 cannot be preserved without re-encoding, so those fail loudly.
+A stamp that already carries a \fISettings:\fR line is preserved as-is;
+otherwise the shift is recovered from filename tags when present (old
+stamp-less files gain a real stamp and become \fI-D\fR-able).
 .TP
 .B --no-delete-tags
 With \fI--tag-template\fR: keep source tags not listed in the template

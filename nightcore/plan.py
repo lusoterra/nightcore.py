@@ -6,7 +6,7 @@ import sys
 
 from .audio import format_rate, get_audio_info, get_sample_rate, mp3_header_info, next_standard_rate, packet_vbr_info, semitones_from_speed, speed_from_semitones, wav_codec_for
 from .constants import LOSSY_CODECS, OUTPUT_FORMATS
-from .naming import lossy_suffix_for, strip_denightcore_tags, strip_quality_rate_tags
+from .naming import clean_source_title, lossy_suffix_for, strip_denightcore_tags, strip_quality_rate_tags
 from .tags import apply_template_tags, clean_encoder, get_artist, get_title, render_autorename, sanitize_filename
 
 def denightcore_verdict(d_st, target_rate, is_lossy_output, codec,
@@ -216,7 +216,13 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
     # Past verdicts go stale on new audio work: drop them here so titles,
     # template {title} slots and bare-autorename bases never accumulate
     # "[denightcored BP] [1.3x] [denightcored BP] ..." across cycles.
+    # Fresh encodes retitle from the source tag, so stale script groups
+    # go too (a re-encode would otherwise duplicate them next to the
+    # fresh tags). Explicit template titles bypass all of this verbatim.
+    # (-D restores instead: run_conversion cleans its title separately.)
     original_title = strip_denightcore_tags(original_title)
+    if denight is None:
+        original_title = clean_source_title(original_title)
 
     # Tag template: override/keep source tags, strip everything else at
     # encode time. A title=/artist= value may use {slots} (rendered here
