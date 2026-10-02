@@ -190,6 +190,28 @@ def test_opus_stamp_readback_native(monkeypatch, capsys, tmp_path):
     assert fields.get("title") == "tone [Nightcore 1.2x]"
 
 
+def test_renametag_backfills_stamp(monkeypatch, capsys, tmp_path):
+    # Old library file: filename/title tags but a stamp without Settings.
+    # -N rebuilds the stamp from the filename so -D works afterwards.
+    _require_fixture()
+    _require_tools("ffmpeg", "ffprobe", "metaflac")
+    work = tmp_path / "work.flac"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(FIXTURE), "-s", "1.2", "--no-stamp", "-o", str(work)],
+    )
+    assert rc == 0
+    tagged = tmp_path / "old nightcore [1.2x].flac"
+    work.rename(tagged)
+    fixed = tmp_path / "fixed.flac"
+    rc, _ = _run(monkeypatch, capsys, [str(tagged), "-N", "-o", str(fixed)])
+    assert rc == 0
+    stamped = _flac_raw_fields(fixed).get("DESCRIPTION")
+    assert stamped is not None and "speed=1.2x" in stamped
+    title = read_format_tag(fixed, "title")
+    assert title is not None and "[1.2x]" not in title
+
+
 def test_denightcore_stamp_only_roundtrip(monkeypatch, capsys, tmp_path):
     # -D trusts the stamp, not the filename: the nightcored file is
     # renamed to a tagless name first, then restored.

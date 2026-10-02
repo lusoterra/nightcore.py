@@ -45,6 +45,34 @@ def test_strip_denightcore_tags():
     assert strip_denightcore_tags("song [Greatest Hits]") == "song [Greatest Hits]"
 
 
+def test_clean_source_title():
+    from nightcore.naming import clean_source_title
+    assert clean_source_title(
+        "Song [Nightcore 1.2x] [1.2x] [16bit 44.1kHz]") == "Song"
+    assert clean_source_title("Song [denightcored BP]") == "Song"
+    assert clean_source_title("Song [Greatest Hits]") == "Song [Greatest Hits]"
+    assert clean_source_title(
+        "Song [Nightcore's Mix]") == "Song [Nightcore's Mix]"
+
+
+def test_backfill_stamp_settings():
+    from nightcore.tags import backfill_stamp_settings, parse_stamp_shifts
+    assert backfill_stamp_settings("song", sample_rate=44100) is None
+    settings = backfill_stamp_settings(
+        "song [1.2x] [mp3 CBR 320k LAME3.100]", sample_rate=52920,
+        bits=16, codec="flac", out_format="flac")
+    assert settings is not None
+    assert "speed=1.2x" in settings
+    assert "semitones=" not in settings
+    assert "source-rate=44100Hz" in settings
+    assert parse_stamp_shifts("base\n" + settings) == (1.2, 0.0)
+    pitch = backfill_stamp_settings(
+        "song [2.16st]", sample_rate=52920, bits=16, codec="flac",
+        out_format="flac")
+    assert pitch is not None and "semitones=2.16st" in pitch
+    assert parse_stamp_shifts("base\n" + pitch) == (1.0, 2.16)
+
+
 def test_denightcore_verdict():
     from nightcore.plan import denightcore_verdict
     assert denightcore_verdict(0.0, None, False, "flac", "") == "denightcored BP"
@@ -93,6 +121,13 @@ def test_render_name_template_bare_placeholders():
 def test_render_name_template_drops_empty_brackets():
     assert render_name_template("{title} [{diff}]",
                                  {"title": "song", "diff": ""}) == "song"
+    assert render_name_template("{title} [Nightcore {diff}]",
+                                 {"title": "song", "diff": ""}) == "song"
+    assert render_name_template("{title} [Nightcore {diff}]",
+                                 {"title": "song", "diff": "1.2x"}) == "song [Nightcore 1.2x]"
+    assert render_name_template("{title} [Greatest Hits] [{diff}]",
+                                 {"title": "song",
+                                  "diff": ""}) == "song [Greatest Hits]"
     assert render_name_template("{title} [{diff}] [{quality}] [{resample}]",
                                  {"title": "song", "diff": "1.2x",
                                   "quality": "", "resample": ""}) == "song [1.2x]"

@@ -139,6 +139,34 @@ def build_stamp_settings(*, speed=1.0, semitones=0.0, pitch_mode=False,
     return "Settings: " + " ".join(parts)
 
 
+def backfill_stamp_settings(stem, *, sample_rate=None, bits=None,
+                            codec=None, out_format="flac"):
+    """Rebuild a stamp Settings line from filename shift tags, or None.
+
+    Reads [Nx]/[Nst]/[Nightcore Nx] groups out of a stem left behind by
+    an older run (or a rename that kept them) so renametag mode can write
+    a proper stamp -- and a later -D can undo from it. Restored rate and
+    depth describe the pre-shift audio, matching what a forward job would
+    have recorded. Returns None when the stem carries no shift tags.
+    """
+    from .audio import speed_from_semitones
+    from .naming import split_shift_tags
+    _, speed, st, found, _ = split_shift_tags(stem)
+    if not found or not speed:
+        return None
+    restored = None
+    if sample_rate is not None:
+        try:
+            restored = round(
+                sample_rate / speed / speed_from_semitones(st))
+        except (ValueError, ZeroDivisionError, OverflowError):
+            restored = None
+    return build_stamp_settings(
+        speed=speed, semitones=st, pitch_mode=(st != 0.0),
+        target_rate=None, out_format=out_format, lossy_opts=(),
+        source_rate=restored, source_bits=bits, source_codec=codec)
+
+
 def parse_stamp_shifts(stamp_text):
     """(speed, semitones) recovered from a stamp settings line, or None.
 
@@ -212,6 +240,23 @@ def render_name_template(tmpl_str, mapping):
     """
     out = str(tmpl_str)
     mapping = mapping or {}
+
+    def _drop_vacant(m):
+        # Drop a bracket group whose placeholders ALL render empty:
+        # "[Nightcore {diff}]" with no diff carries no information, so
+        # it goes instead of leaving "[Nightcore ]" behind. Groups with
+        # no placeholders ([Greatest Hits]) always survive, as do groups
+        # with at least one live slot; unknown {keys} count as live so
+        # typos stay visible.
+        inner = m.group(1)
+        keys = re.findall(
+            r"\{(title|artist|diff|quality|resample|denightcore)"
+            r"(?:\(\d+\))?\}", inner)
+        if keys and all(not (mapping.get(k) or "") for k in keys):
+            return ""
+        return m.group(0)
+
+    out = re.sub(r"\[([^\[\]]*)\]", _drop_vacant, out)
 
     def _diff_mod(m):
         return round_diff_bare(mapping.get("diff") or "", int(m.group(1)))

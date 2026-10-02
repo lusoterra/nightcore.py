@@ -18,6 +18,20 @@ def strip_denightcore_tags(name):
                flags=re.IGNORECASE).split())
 
 
+def clean_source_title(name):
+    """Drop our script groups from an inherited Title tag.
+
+    Removes shift/display tags ([1.2x], [Nightcore 1.2x]), quality and
+    rate tags ([16bit 44.1kHz], [88.2kHz]) and past verdicts
+    ([denightcored BP]) so re-encodes don't accumulate
+    "[Nightcore 1.2x] [1.3x] ..." in titles. Foreign brackets
+    ([Greatest Hits], [Nightcore's Mix]) survive; explicit template
+    titles bypass this entirely (used verbatim).
+    """
+    return strip_quality_rate_tags(
+        split_shift_tags(strip_denightcore_tags(name))[0])
+
+
 def split_shift_tags(name):
     """Strip shift/rate/rb [...] groups; return (cleaned, speed, st, found, rb).
 
