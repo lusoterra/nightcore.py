@@ -5,11 +5,26 @@ import re
 
 from .constants import LOSSY_CODECS, _BITRATE_TAG, _DEPTH_TAG, _RATE_TOKEN, _SHIFT_TOKEN
 
+def strip_denightcore_tags(name):
+    """Remove our own [denightcore ...] verdict groups; return cleaned name.
+
+    A verdict describes a past job, so it goes stale the moment new audio
+    work happens: without this, nightcore -> denightcore -> nightcore
+    cycles would accumulate "[denightcored BP] [1.3x] [denightcored BP] ..."
+    in titles and filenames. Anything else stays verbatim.
+    """
+    return " ".join(
+        re.sub(r"\[denightcore[^\[\]]*\]", "", name,
+               flags=re.IGNORECASE).split())
+
+
 def split_shift_tags(name):
     """Strip shift/rate/rb [...] groups; return (cleaned, speed, st, found, rb).
 
     Removes bracket groups made only of shift tokens ([1.2x], [3.15st],
-    combined [1.2x 2.16st]), bare rate tags ([88.2kHz]), and recorded
+    combined [1.2x 2.16st]), display groups this tool writes into titles
+    ([Nightcore 1.2x], i.e. a leading "Nightcore" marker before shift
+    tokens), bare rate tags ([88.2kHz]), and recorded
     rubberband extras ([rb --formant]). Quality tags ([mp3 CBR 320k LAME],
     [16bit 44.1kHz]) and anything else stay verbatim. speed = product of
     [Nx], st = sum of [Nst]; found tells whether any shift token was seen
@@ -22,6 +37,13 @@ def split_shift_tags(name):
     def _strip(m):
         nonlocal speed, st, found
         toks = m.group(1).split()
+        if toks and toks[0].lower() == "nightcore":
+            # Display flavor of a shift tag ("Song [Nightcore 1.2x]"):
+            # same stripping/parsing as the bare form. Anything else
+            # after the marker (e.g. "[Nightcore's Mix]") stays verbatim.
+            toks = toks[1:]
+            if not toks:
+                return m.group(0)
         if toks and toks[0] == "rb":
             rb_groups.append(" ".join(toks[1:]))
             return ""
@@ -84,17 +106,6 @@ def lossy_suffix_for(codec, bit_rate, mode=None, encoder=None):
     if encoder:
         parts.append(encoder)
     return " [" + " ".join(parts) + "]"
-
-
-def name_base_for(autorename, artist, original_title, fallback_stem):
-    """Output name stem: Artist - Title under --autorename (artist
-    prefix omitted without an artist tag), else the fallback stem
-    (input stem, or cleaned stem for -D)."""
-    if not autorename:
-        return fallback_stem
-    if artist:
-        return f"{artist} - " + original_title
-    return original_title
 
 
 def batch_op_dir(args, op, fmt=None):

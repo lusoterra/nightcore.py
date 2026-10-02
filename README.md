@@ -24,7 +24,8 @@ of Nightcore. You can, of course, slow down music with it as well.
 - Convert whole folders with --batch: reruns skip finished files, -y redo them all
 - Retime `.lrc` lyrics to match sped-up audio; they land next to the music with the same name
 - Frequency calculators built in: --pitch-diff and --speed-diff turn measured peaks into exact semitones
-- Filenames and titles document every job ([1.2x], [3.16st], [16bit 44.1kHz]), and --simple-title gives players a clean Title tag
+- Filenames and titles document every job ([1.2x], [3.16st], [16bit 44.1kHz]): filenames always carry the full tags at full precision (customize on the fly with --autorename; denightcore undos carry `[denightcored BP/NBP]` by default), titles carry just `Title [Nightcore 2.17st]` by default (rounded to 2 decimals), and `title=`/`artist=` lines in the tag template accept bare `{title}`/`{diff}`/`{quality}`/`{resample}`/`{denightcore}` slots (`{diff(2)}` rounds for display), e.g. `title="{title} [Nightcore {diff(2)}]"` — an explicit `title=` is used verbatim. Artist and all other source tags ride through untouched by default
+- Undo anything with -D (stamp-trusted, filenames aren't): names rebuild as `Artist - Title [quality] [denightcored BP/NBP]`, the stamp records the undo so double-undos refuse, and pure-speedup cycles are bit-exact
 - Safe by default: dry-run with -n, never overwrites without -y, Ctrl+C deletes partials instead of leaving corrupt files
 
 ## Requirements

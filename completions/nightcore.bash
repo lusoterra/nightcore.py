@@ -9,7 +9,7 @@ _nightcore() {
         cword=$COMP_CWORD
     }
 
-    local opts="-s --speed -r --reciprocal -y --overwrite -q --quiet -R --resample -F --format --lossy-opts= --batch -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run --simple-title --autotag --autorename -N --renametag --in-place --no-delete-tags --stamp -o --output --output-folder --tag-template --cover --version -h --help"
+    local opts="-s --speed -r --reciprocal -y --overwrite -q --quiet -R --resample -F --format --lossy-opts= --batch -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run --autorename -N --renametag --in-place --no-delete-tags --no-stamp -o --output --output-folder --tag-template --cover --version -h --help"
 
     case "$prev" in
         -s|--speed)
@@ -39,8 +39,8 @@ _nightcore() {
             # (= form only: space-separated values are rejected)
             return 0
             ;;
-        --simple-title)
-            # Free-form title suffix: no completion
+        --autorename)
+            # Free-form filename template: no completion
             return 0
             ;;
         =)
