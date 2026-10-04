@@ -116,7 +116,7 @@ def bits_from_stream(stream):
 
 
 def wav_codec_for(bits):
-    """Depth-matched PCM encoder for .wav output (stays lossless)."""
+    """Depth-matched PCM encoder (temp WAVs, depth decisions)."""
     if bits is None:
         return "pcm_s16le"  # e.g. lossy source decoded to float
     if bits <= 16:

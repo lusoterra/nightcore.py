@@ -140,6 +140,76 @@ def _verified_cli(binary, check_args, marker, timeout=60):
 _qaac_version = None
 
 
+_tool_versions = {}
+
+_VERSION_FLAGS = {
+    "ffmpeg": "-version",
+    "sox": "--version",
+    "rubberband": "--version",
+    "lame": "--version",
+    "opusenc": "--version",
+    "metaflac": "--version",
+    "qaac": "--version",
+}
+
+_VERSION_WORD = re.compile(r"version\s+([^\s)]+)")
+_VERSION_TOKEN = re.compile(r"\S*\d\S*")
+
+
+def tool_version(name):
+    """Compact version token for the pipeline tag ("n9.0.2", "4.0", ...).
+
+    Prefers a "version X" word, else the first digit-bearing token of the
+    version line. "unknown" when the tool is missing or unreadable. Never
+    raises; results are cached (batch runs probe each tool once). qaac
+    reuses the verified --check line instead of spawning wine twice.
+    """
+    if name in _tool_versions:
+        return _tool_versions[name]
+    token = "unknown"
+    if name == "qaac":
+        checked = find_qaac()
+        if checked:
+            match = _VERSION_WORD.search(checked) or _VERSION_TOKEN.search(checked)
+            if match:
+                token = match.group(1) if match.lastindex else match.group(0)
+                token = token.rstrip(",.;:")
+    elif shutil.which(name) is not None:
+        try:
+            result = subprocess.run(
+                [name, _VERSION_FLAGS.get(name, "--version")],
+                capture_output=True, text=True, check=False, timeout=30,
+            )
+        except (subprocess.SubprocessError, OSError):
+            result = None
+        if result is not None:
+            output = (result.stdout or "") + (result.stderr or "")
+            first = output.strip().splitlines()[0] if output.strip() else ""
+            match = _VERSION_WORD.search(first) or _VERSION_TOKEN.search(first)
+            if match:
+                token = match.group(1) if match.lastindex else match.group(0)
+                token = token.rstrip(",.;:")
+    _tool_versions[name] = token
+    return token
+
+
+_TOOLBOX_RE = re.compile(r"CoreAudioToolbox\s+([\d.]+)")
+
+
+def coreaudio_toolbox_version():
+    """CoreAudioToolbox DLL version from `qaac --check`, or None.
+
+    The toolbox (not the qaac frontend) does the actual AAC encoding,
+    so its version is what identifies a qaac encode. Returns None when
+    qaac is missing or the version cannot be parsed. Never raises.
+    """
+    checked = find_qaac()
+    if not checked:
+        return None
+    match = _TOOLBOX_RE.search(checked)
+    return match.group(1) if match else None
+
+
 def find_qaac():
     """Verify a genuine qaac binary is usable; return its version line or None.
 
@@ -224,18 +294,21 @@ def select_lossy_backend(fmt, dialect):
                 return None
             say(f"Encoding MP3 with lame CLI{forced}")
             return {"kind": "lame"}
-        if dialect == "ffmpeg" and not ffmpeg_has_encoder("libmp3lame"):
-            print("Error: --lossy-opts are libmp3lame-style but this "
-                  "ffmpeg lacks libmp3lame", file=sys.stderr)
-            return None
-        if ffmpeg_has_encoder("libmp3lame"):
+        if dialect == "ffmpeg":
+            if not ffmpeg_has_encoder("libmp3lame"):
+                print("Error: --lossy-opts are libmp3lame-style but this "
+                      "ffmpeg lacks libmp3lame", file=sys.stderr)
+                return None
             say(f"Encoding MP3 with libmp3lame{forced}")
             return {"kind": "ffmpeg"}
         if find_lame():
-            say(f"Encoding MP3 with lame CLI{forced}")
+            say("Encoding MP3 with lame CLI")
             return {"kind": "lame"}
+        if ffmpeg_has_encoder("libmp3lame"):
+            say("Encoding MP3 with libmp3lame")
+            return {"kind": "ffmpeg"}
         print("Error: no MP3 encoder found "
-              "(need ffmpeg with libmp3lame, or lame)", file=sys.stderr)
+              "(need lame, or ffmpeg with libmp3lame)", file=sys.stderr)
         return None
     if fmt == "opus":
         if dialect == "cli":
@@ -407,6 +480,89 @@ def flac_postprocess(flac_path, image, mime, comment, description, encoder):
     return ok
 
 
+def m4a_postprocess(m4a_path, pipeline):
+    """Write the encoder_settings freeform atom on an m4a file.
+
+    The mov muxer drops unknown metadata keys (and its use_metadata_tags
+    mode breaks attached pictures and tag editors), so the pipeline tag
+    goes through mutagen after the encode instead -- the exact analogue
+    of the metaflac pass for FLAC. Key stored lowercase, matching every
+    other backend. Returns True on success; warns once
+    per run and returns False when mutagen is missing (install
+    python-mutagen) or the write fails. Never raises.
+    """
+    global _warned_mutagen
+    try:
+        from mutagen.mp4 import MP4
+    except ImportError:
+        MP4 = None
+    if MP4 is None:
+        if not _warned_mutagen:
+            print("Warning: python-mutagen not found (install it); "
+                  "skipping the encoder_settings pipeline tag on "
+                  f"{m4a_path} (covers and standard tags are unaffected)",
+                  file=sys.stderr)
+            _warned_mutagen = True
+        return False
+    try:
+        track = MP4(str(m4a_path))
+        track["----:com.apple.iTunes:encoder_settings"] = [
+            str(pipeline).encode("utf-8")]
+        track.save()
+        return True
+    except Exception as e:
+        print(f"Warning: m4a tag fix failed on {m4a_path}: {e}",
+              file=sys.stderr)
+        return False
+
+
+_warned_mutagen = False
+_warned_mutagen_mp3 = False
+
+
+def mp3_postprocess(mp3_path, compilation):
+    """Write a real TCMP compilation frame on an mp3 file.
+
+    ffmpeg maps `compilation` to a generic TXXX frame, but the
+    well-supported convention players expect (iTunes, foobar2000,
+    Mp3tag, beets, Picard) is the native TCMP frame -- so it goes
+    through mutagen after the encode, mirroring m4a_postprocess.
+    Competing TXXX:TCMP/COMPILATION/ITUNESCOMPILATION descriptions
+    are removed so readers never see two answers. Returns True on
+    success; warns once per run and returns False when mutagen is
+    missing (install python-mutagen) or the write fails. Never raises.
+    """
+    global _warned_mutagen_mp3
+    try:
+        from mutagen.mp3 import MP3
+        from mutagen.id3 import TCMP
+    except ImportError:
+        MP3 = None
+    if MP3 is None:
+        if not _warned_mutagen_mp3:
+            print("Warning: python-mutagen not found (install it); "
+                  "skipping the TCMP compilation frame on "
+                  f"{mp3_path} (other tags are unaffected)",
+                  file=sys.stderr)
+            _warned_mutagen_mp3 = True
+        return False
+    try:
+        track = MP3(str(mp3_path))
+        for key in list(track.keys()):
+            if key == "TCMP":
+                continue
+            if key.startswith("TXXX:") and key.split(":", 1)[1].upper() in (
+                    "TCMP", "COMPILATION", "ITUNESCOMPILATION"):
+                del track[key]
+        track["TCMP"] = TCMP(encoding=3, text=[str(compilation)])
+        track.save()
+        return True
+    except Exception as e:
+        print(f"Warning: mp3 tag fix failed on {mp3_path}: {e}",
+              file=sys.stderr)
+        return False
+
+
 def missing_metaflac():
     """True (after printing the install error) when metaflac is absent."""
     if shutil.which("metaflac") is None:
@@ -436,6 +592,10 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
     tag behavior. Combines with metadata_from (cover becomes input 2).
     strip_tags: drop every tag first, then write extra_tags + title
     (tag templates).
+    m4a freeform tags (encoder_settings) are finished afterwards by
+    m4a_postprocess: the mov muxer drops unknown keys, and its
+    use_metadata_tags mode breaks both attached pictures and tag
+    editors, so ffmpeg never attempts them.
     drop_tags: tag names (case-insensitive) to exclude while mapping
     (lossy outputs drop stale source encoder tags); implemented as an
     explicit pass-through of everything else.
@@ -524,5 +684,15 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
         ffmpeg_cmd += ["-fflags", "+bitexact"]
     ffmpeg_cmd += [str(output_path)]
     run_tool(ffmpeg_cmd)
+    if str(output_path).lower().endswith(".m4a"):
+        for key, value in (extra_tags or {}).items():
+            if str(key).lower() == "encoder_settings" and value:
+                m4a_postprocess(output_path, value)
+                break
+    if str(output_path).lower().endswith(".mp3"):
+        for key, value in (extra_tags or {}).items():
+            if str(key).lower() == "compilation" and value:
+                mp3_postprocess(output_path, value)
+                break
 
 

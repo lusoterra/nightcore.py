@@ -62,8 +62,8 @@ intermediate first).
 Output format: \fBflac\fR (default), \fBalac\fR, \fBwav\fR, \fBmp3\fR,
 \fBopus\fR, \fBaac\fR (.m4a).
 Automatic quality defaults exist only for lossless output, tuned for most
-compression (FLAC level 12; ALAC/WAV have no knobs). Lossy outputs prefer
-the best encoder -- MP3 via libmp3lame (lame CLI fallback), Opus via
+compression (FLAC level 12; ALAC has no knobs). Lossy outputs prefer
+the best encoder -- MP3 via lame CLI (libmp3lame fallback), Opus via
 opusenc (ffmpeg libopus fallback), AAC via qaac (ffmpeg AAC fallback with
 a quality warning) -- with quality defaults V0 (mp3), 128k (opus)
 and TVBR 91 (qaac); ffmpeg AAC has none and fails loudly unless explicit
@@ -78,10 +78,10 @@ encoders are used.
 .TP
 .B -p, --pitch
 Pitch-shift only, keep duration (needs rubberband; SoX upsamples first
-so shifted highs survive). Labelled full-precision
-semitones, e.g.
-.IR "[3.1564128700055254st]" ;
-negating the value reverses the shift exactly.
+so shifted highs survive). Labelled semitones rounded to 2 decimals,
+e.g.
+.IR "[3.16st]" ;
+exact values live in the pipeline tag, which \fI-D\fR inverts exactly.
 .TP
 .B -S, --semitones \fIST\fR
 Pitch-shift by semitones: alone it implies \fB-p\fR; with
@@ -94,7 +94,9 @@ Print output filename(s), convert nothing.
 Rename output via a filename-stem template with bare \fI{artist} {title}
 {diff} {quality} {resample} {denightcore}\fR slots, e.g.
 \fI--autorename="{artist} - {title} [{diff}]"\fR. Bare
-\fI--autorename\fR keeps the legacy \fIArtist - Title [tags]\fR; default
+\fI--autorename\fR keeps the legacy \fIArtist - Title [tags]\fR (base
+cleaned of script groups, suffix recovered from filename tags under
+\fI-N\fR, so re-runs are idempotent); default
 keeps the input filename and appends params. A bare flag goes last or
 uses \fI=\fR, else it eats the input filename as its template.
 .TP
@@ -111,17 +113,17 @@ An existing \fIDIR\fR nests them (\fIDIR/encodes/[format]/...); a missing
 runs redirect their output into \fIDIR\fR instead.
 .TP
 .B --in-place
-With \fI-N --batch\fR: renametag alongside the inputs instead of
+With \fI-N\fR: renametag alongside the inputs instead of
 copying to \fI./renametag/\fR. Asks \fI[y/N]\fR first (default no):
 originals move. Needs \fI-N\fR; cannot be combined with
-\fI--output-folder\fR.
+\fI--output-folder\fR or \fI-o\fR.
 .TP
 .B -N, --renametag
 Renametag mode: rewrite tags and rename via stream copy, with no audio
 processing. Each file keeps its container (\fI-F\fR is ignored).
-Batch copies land flat in \fI./renametag/\fR
-(originals stay); single-file
-renames land alongside (a rename moves: the original is removed).
+Copies land flat in \fI./renametag/\fR (originals stay); \fI--in-place\fR
+moves alongside the inputs instead (asks \fI[y/N]\fR first),
+\fI-o\fR names the copy verbatim.
 Same-stem .lrc lyrics follow their audio master (renamed or copied
 alongside it); batch .lrc entries are skipped as sidecar-driven.
 Names come from \fI--autorename\fR (Artist - Title) or the input stem,
@@ -131,19 +133,30 @@ rewrite goes through a temp file plus atomic replace. Opus pictures
 cannot be preserved without re-encoding, so those fail loudly.
 A stamp that already carries a \fISettings:\fR line is preserved as-is;
 otherwise the shift is recovered from filename tags when present (old
-stamp-less files gain a real stamp and become \fI-D\fR-able).
+stamp-less files gain a real stamp and become \fI-D\fR-able). The
+recovered shift also feeds the \fI{diff}\fR slot of template titles,
+so retags print the same \fITitle [Nightcore diff]\fR style as fresh
+encodes.
 .TP
 .B --no-delete-tags
 With \fI--tag-template\fR: keep source tags not listed in the template
 (default: strip them, template only). Needs a template.
 .TP
 .B --no-stamp
-Skip the DESCRIPTION provenance stamp. By default every output is
-stamped \fIMade with nightcore <version> (<url>)\fR plus a \fISettings:\fR
-second line carrying the encode parameters (speed, semitones, resample
-target, format, source fingerprint), so a renamed file still carries
-enough info to reverse it with \fI-D\fR. Overrides any template
-description; FLAC outputs then require metaflac.
+Skip the \fIMade with nightcore.py\fR DESCRIPTION provenance tag
+(default: every output carries it, overriding any template description;
+mapped source copies are scrubbed too).
+.TP
+.B --no-pipeline
+Skip the encoder_settings pipeline tag: shift, resample target, output
+format, source fingerprint and the versions of the tools that ran
+(qaac encodes also record the CoreAudioToolbox version doing the
+actual work; opusenc-style; what \fI-D\fR reads back). Default writes
+it (mapped source copies are scrubbed too). \fI--no-stamp\fR and
+\fI--no-pipeline\fR are independent: drop the branding for anonymous
+posts, keep the data that makes reversals work. Template-explicit
+values still apply either way. FLAC outputs needing tag fixes require
+metaflac.
 .TP
 .B --tag-template \fIFILE\fR
 Apply a tag template file: one \fIkey="value"\fR entry per tag (values
@@ -156,15 +169,18 @@ is given. \fItitle=\fR and \fIartist=\fR values may use bare
 e.g. \fItitle="{title} [Nightcore {diff(2)}]"\fR. An explicit
 \fItitle=\fR is used verbatim for every file; without one, titles
 default to \fITitle [Nightcore diff]\fR (rounded to 2 decimals, full
-precision stays in the filename and stamp). All other
+precision stays in the pipeline tag). Template tag names are
+case-insensitive and stored lowercase; \fIalbumartist=\fR is stored
+canonically except on m4a (which needs the \fIalbum_artist\fR spelling).
+All other
 values stay literal. Template \fIcomment\fR lands in COMMENT (ffmpeg alone
 would file it as DESCRIPTION) and \fIencoder\fR stubs are honored on
 FLAC; muxer-written encoder tags are stripped by default (lossy outputs
 without a template keep the encoder's own tags instead).
 .TP
 .B --cover \fIIMG\fR
-PNG/JPG artwork to use as the sole attached picture of outputs (only wav
-cannot carry pictures; opus pictures go via opusenc).
+PNG/JPG artwork to use as the sole attached picture of outputs
+(opus pictures go via opusenc).
 .TP
 .B --version
 Print version and exit.
@@ -205,13 +221,17 @@ Calculator, no conversion. One value = speed factor; two values = peak
 frequencies (original, pitched). Prints semitones, cents, speed factor.
 .TP
 .B -D, --denightcore
-Undo from the stamp tag only: inverts the shift recorded in the input's
-\fISettings:\fR DESCRIPTION line. Filenames are untrusted (users rename
-them) and are never parsed, so an unstamped file fails (batch runs skip
-untagged files with a tally instead). Pre-stamp files with only filename
-tags cannot be restored this way (use \fI-s/-r\fR manually).
-Names rebuild from tags as \fIArtist - Title [quality] [denightcore
-BP]\fR or \fI[denightcored NBP]\fR (artist prefix omitted without an
+Undo from the pipeline tag only (encoder_settings): inverts the
+recorded shift. Records without the \fINiGhTcOrE\fR magic marker are
+refused, as are filenames alone, so a file with
+neither record fails (batch runs skip untagged files with a tally
+instead). Pre-magic files gain the marker through a \fI-N\fR round
+(old \fISettings:\fR lines migrate too); files with only filename
+tags need \fI-s/-r\fR manually if no record exists at all, and WAV
+inputs carry no readable tags, so they can never be undone from tags.
+Names rebuild from tags as \fIArtist - Title [denightcore
+BP]\fR or \fI[denightcored NBP]\fR (plus a resample tag when resampling
+now; artist prefix omitted without an
 artist tag); a custom \fI--autorename\fR template is honored instead.
 \fI--tag-template\fR is ignored (restoring, not curating). The output
 stamp records the undo, so a second \fI-D\fR on it refuses (nothing left
@@ -284,7 +304,7 @@ At bare minimum python3 and FFmpeg. SoX is required for any resampling,
 and rubberband for any pitch shifting (-p, -S and pitch -D jobs).
 A \fBqaac\fR binary is used for ALAC/AAC when
 present, with automatic fallback to FFmpeg (AAC fallback warns: it sounds
-worse). \fBlame\fR is the MP3 fallback when ffmpeg lacks libmp3lame;
+worse). \fBlame\fR is the preferred MP3 encoder (libmp3lame fallback);
 \fBopusenc\fR is the preferred Opus encoder (ffmpeg libopus fallback). The \fBmetaflac\fR tool
 (from the flac package) forces Cover (front) picture types and
 exact COMMENT/DESCRIPTION/ENCODER tags on FLAC outputs; a run needing

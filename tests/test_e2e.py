@@ -74,7 +74,7 @@ def test_dry_run_predicts_name(monkeypatch, capsys):
     _require_tools("ffprobe")
     rc, out = _run(monkeypatch, capsys, [str(FIXTURE), "-s", "1.2", "-n"])
     assert rc == 0
-    assert "[1.2x]" in out
+    assert "[Nightcore 1.2x]" in out
 
 
 def test_stamp_plain_convert(monkeypatch, capsys, tmp_path):
@@ -87,10 +87,12 @@ def test_stamp_plain_convert(monkeypatch, capsys, tmp_path):
     )
     assert rc == 0
     assert out.is_file()
-    stamped = _flac_raw_fields(out).get("DESCRIPTION")
-    assert stamped is not None
-    assert stamped.startswith(tool_stamp() + "\n")
-    assert "speed=1.2x" in stamped
+    fields = _flac_raw_fields(out)
+    assert fields.get("DESCRIPTION") == tool_stamp()
+    pipe = fields.get("encoder_settings") or ""
+    assert "speed=1.2x" in pipe
+    assert "tools=ffmpeg=" in pipe
+    assert "Settings:" not in pipe
 
 
 def test_no_stamp_disables(monkeypatch, capsys, tmp_path):
@@ -102,8 +104,25 @@ def test_no_stamp_disables(monkeypatch, capsys, tmp_path):
         [str(FIXTURE), "-s", "1.2", "--no-stamp", "-o", str(out)],
     )
     assert rc == 0
-    stamped = _flac_raw_fields(out).get("DESCRIPTION") or ""
-    assert not stamped.startswith("Made with nightcore ")
+    fields = _flac_raw_fields(out)
+    assert not (fields.get("DESCRIPTION") or "").startswith(
+        "Made with nightcore")
+    # The pipeline is independent: still written.
+    assert "speed=1.2x" in (fields.get("encoder_settings") or "")
+
+
+def test_no_pipeline_disables(monkeypatch, capsys, tmp_path):
+    _require_fixture()
+    _require_tools("ffmpeg", "ffprobe", "metaflac")
+    out = tmp_path / "nopipe.flac"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(FIXTURE), "-s", "1.2", "--no-pipeline", "-o", str(out)],
+    )
+    assert rc == 0
+    fields = _flac_raw_fields(out)
+    assert fields.get("DESCRIPTION") == tool_stamp()
+    assert not any(k.lower() == "encoder_settings" for k in fields)
 
 
 def test_default_title_is_diff_only(monkeypatch, capsys, tmp_path):
@@ -155,10 +174,10 @@ def test_stamp_survives_stripping_template(monkeypatch, capsys, tmp_path):
     assert rc == 0
     # Template applied (everything else stripped)...
     assert read_format_tag(out, "artist") == "Stamp Artist"
-    # ...but the stamp rode through the stripping.
-    stamped = _flac_raw_fields(out).get("DESCRIPTION")
-    assert stamped is not None
-    assert stamped.startswith(tool_stamp() + "\n")
+    # ...but both marks rode through the stripping.
+    fields = _flac_raw_fields(out)
+    assert fields.get("DESCRIPTION") == tool_stamp()
+    assert "speed=1.2x" in (fields.get("encoder_settings") or "")
 
 
 def _sine_flac(path, seconds=3):
@@ -187,18 +206,86 @@ def test_opus_stamp_readback_native(monkeypatch, capsys, tmp_path):
     fields = native_format_tags(out)
     assert fields is not None
     assert fields.get("description", "").startswith(tool_stamp())
+    assert "speed=1.2x" in fields.get("encoder_settings", "")
     assert fields.get("title") == "tone [Nightcore 1.2x]"
 
 
+def test_opus_albumartist_canonical(monkeypatch, capsys, tmp_path):
+    # Template albumartist= must land as ALBUMARTIST, not the movenc
+    # alias spelling ALBUM_ARTIST.
+    _require_tools("ffmpeg", "ffprobe", "opusenc", "opusinfo")
+    src = tmp_path / "tone.flac"
+    _sine_flac(src)
+    tmpl = tmp_path / "aa.tmpl"
+    tmpl.write_text('albumartist="Various Artists"\n', encoding="utf-8")
+    out = tmp_path / "tone.opus"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(src), "-s", "1.2", "-F", "opus",
+         "--lossy-opts=--bitrate 64", "--tag-template", str(tmpl),
+         "-o", str(out)],
+    )
+    assert rc == 0
+    fields = native_format_tags(out)
+    assert fields is not None
+    assert fields.get("albumartist") == "Various Artists"
+    assert "album_artist" not in fields
+
+
+def test_mp3_compilation_tcmp(monkeypatch, capsys, tmp_path):
+    # Template compilation= must land as a native TCMP frame, not a
+    # generic TXXX duplicate.
+    mutagen_mp3 = pytest.importorskip("mutagen.mp3")
+    _require_tools("ffmpeg", "ffprobe")
+    src = tmp_path / "tone.flac"
+    _sine_flac(src)
+    tmpl = tmp_path / "c.tmpl"
+    tmpl.write_text('compilation="1"\n', encoding="utf-8")
+    out = tmp_path / "tone.mp3"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(src), "-s", "1.2", "-F", "mp3",
+         "--tag-template", str(tmpl), "-o", str(out)],
+    )
+    assert rc == 0
+    track = mutagen_mp3.MP3(str(out))
+    assert track.get("TCMP") is not None
+    assert track["TCMP"].text == ["1"]
+    dupes = [k for k in track.keys()
+             if k.startswith("TXXX:")
+             and k.split(":", 1)[1].upper()
+             in ("TCMP", "COMPILATION", "ITUNESCOMPILATION")]
+    assert dupes == []
+
+
+def test_aac_pipeline_toolbox(monkeypatch, capsys, tmp_path):
+    # qaac encodes record the CoreAudioToolbox DLL version alongside
+    # the qaac frontend version: the DLL does the actual encoding.
+    _require_tools("ffmpeg", "ffprobe", "qaac")
+    src = tmp_path / "tone.flac"
+    _sine_flac(src)
+    out = tmp_path / "tone.m4a"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(src), "-s", "1.2", "-F", "aac",
+         "--lossy-opts=-V 91", "-o", str(out)],
+    )
+    assert rc == 0
+    pipe = read_format_tag(out, "encoder_settings")
+    assert pipe is not None
+    assert "CoreAudioToolbox=" in pipe
+
+
 def test_renametag_backfills_stamp(monkeypatch, capsys, tmp_path):
-    # Old library file: filename/title tags but a stamp without Settings.
-    # -N rebuilds the stamp from the filename so -D works afterwards.
+    # Old library file: filename/title tags but no machine tags at all.
+    # -N rebuilds the pipeline from the filename so -D works afterwards.
     _require_fixture()
     _require_tools("ffmpeg", "ffprobe", "metaflac")
     work = tmp_path / "work.flac"
     rc, _ = _run(
         monkeypatch, capsys,
-        [str(FIXTURE), "-s", "1.2", "--no-stamp", "-o", str(work)],
+        [str(FIXTURE), "-s", "1.2", "--no-stamp", "--no-pipeline",
+         "-o", str(work)],
     )
     assert rc == 0
     tagged = tmp_path / "old nightcore [1.2x].flac"
@@ -206,8 +293,9 @@ def test_renametag_backfills_stamp(monkeypatch, capsys, tmp_path):
     fixed = tmp_path / "fixed.flac"
     rc, _ = _run(monkeypatch, capsys, [str(tagged), "-N", "-o", str(fixed)])
     assert rc == 0
-    stamped = _flac_raw_fields(fixed).get("DESCRIPTION")
-    assert stamped is not None and "speed=1.2x" in stamped
+    fields = _flac_raw_fields(fixed)
+    assert "speed=1.2x" in (fields.get("encoder_settings") or "")
+    assert fields.get("DESCRIPTION") == tool_stamp()
     title = read_format_tag(fixed, "title")
     # -N changes no audio, so true shift tags stay; only the empty
     # "[Nightcore ]" artifact from the old build must be gone.
@@ -249,3 +337,27 @@ def test_denightcore_needs_stamp(monkeypatch, capsys, tmp_path):
         [str(tagged), "-D", "--no-stamp", "-o", str(tmp_path / "out.flac")],
     )
     assert rc == 1
+
+
+def test_identity_transcode_inherits_shift(monkeypatch, capsys, tmp_path):
+    # Speed-1.0 distribution transcode of a tagged file: the inherited
+    # shift stays in name, title and pipeline (a blank 1.0x would erase
+    # history and break -D).
+    _require_fixture()
+    _require_tools("ffmpeg", "ffprobe", "metaflac")
+    tagged = tmp_path / "tagged.flac"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(FIXTURE), "-s", "1.1", "--autorename", "-o", str(tagged)],
+    )
+    assert rc == 0
+    out = tmp_path / "dist.mp3"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(tagged), "-F", "mp3", "--autorename", "-o", str(out)],
+    )
+    assert rc == 0
+    title = read_format_tag(out, "title")
+    assert title is not None and "[Nightcore 1.1x]" in title
+    pipe = read_format_tag(out, "encoder_settings")
+    assert pipe is not None and "speed=1.1x" in pipe
