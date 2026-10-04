@@ -70,12 +70,77 @@ def test_backfill_stamp_settings():
     assert "speed=1.2x" in settings
     assert "semitones=" not in settings
     assert "source-rate=44100Hz" in settings
-    assert parse_stamp_shifts("base\n" + settings) == (1.2, 0.0)
+    assert "tools=ffmpeg=" in settings
+    assert "sox=" not in settings and "rubberband=" not in settings
+    assert parse_stamp_shifts(settings) == (1.2, 0.0)
     pitch = backfill_stamp_settings(
         "song [2.16st]", sample_rate=52920, bits=16, codec="flac",
         out_format="flac")
     assert pitch is not None and "semitones=2.16st" in pitch
-    assert parse_stamp_shifts("base\n" + pitch) == (1.0, 2.16)
+    assert parse_stamp_shifts(pitch) == (1.0, 2.16)
+
+
+def test_recover_filename_quality():
+    from nightcore.naming import recover_filename_quality
+    r = recover_filename_quality(
+        "Song [1.1x] [mp3 320k LAME3.99r]")
+    assert r["suffix"] == " [mp3 320k LAME3.99r]"
+    assert r["codec"] == "mp3"
+    assert r["mode"] is None
+    assert r["bitrate_kbps"] == 320
+    assert r["encoder"] == "LAME3.99r"
+    assert r["depth"] is None
+    r = recover_filename_quality(
+        "Kobojsarna - X [1.15x] [mp3 VBR 202k LAME3.97]")
+    assert r["suffix"] == " [mp3 VBR 202k LAME3.97]"
+    assert (r["codec"], r["mode"], r["bitrate_kbps"],
+            r["encoder"]) == ("mp3", "VBR", 202, "LAME3.97")
+    r = recover_filename_quality(
+        "Master Blaster - Y [1.2x] [opus VBR 164k]")
+    assert r["suffix"] == " [opus VBR 164k]"
+    assert (r["codec"], r["mode"], r["bitrate_kbps"],
+            r["encoder"]) == ("opus", "VBR", 164, None)
+    r = recover_filename_quality(
+        "Song [1.2x 2.16st] [16bit 44.1kHz] [96kHz]")
+    assert r["suffix"] == " [16bit 44.1kHz] [96kHz]"
+    assert r["codec"] is None
+    assert r["depth"] == 16
+    assert r["rate_hz"] == 44100
+    assert r["resample_hz"] == 96000
+    r = recover_filename_quality("Song [Greatest Hits] [1.2x]")
+    assert r["suffix"] == "" and r["codec"] is None
+    r = recover_filename_quality("plain song")
+    assert r["suffix"] == ""
+
+
+def test_pipeline_origin_roundtrip():
+    from nightcore.tags import build_pipeline, pipeline_origin
+    pipe = build_pipeline(
+        speed=1.1, out_format="flac", source_codec="mp3",
+        source_mode="VBR", source_bitrate="202k",
+        source_encoder="LAME3.97")
+    origin = pipeline_origin(pipe)
+    assert origin["codec"] == "mp3"
+    assert origin["mode"] == "VBR"
+    assert origin["bitrate"] == "202k"
+    assert origin["encoder"] == "LAME3.97"
+    assert pipeline_origin("no keys here")["codec"] is None
+
+
+def test_backfill_prefers_filename_origin():
+    from nightcore.tags import backfill_stamp_settings, parse_stamp_shifts
+    pipe = backfill_stamp_settings(
+        "Song [1.1x] [mp3 320k LAME3.99r]", sample_rate=48510,
+        bits=32, codec="flac", out_format="flac",
+        origin={"suffix": " [mp3 320k LAME3.99r]", "codec": "mp3",
+                "bitrate_kbps": 320, "encoder": "LAME3.99r",
+                "depth": None, "rate_hz": None, "resample_hz": None})
+    assert pipe is not None
+    assert "source-codec=mp3" in pipe
+    assert "source-bitrate=320k" in pipe
+    assert "source-encoder=LAME3.99r" in pipe
+    assert "source-depth=32bit" in pipe  # container depth stays probe-based
+    assert parse_stamp_shifts(pipe) == (1.1, 0.0)
 
 
 def test_denightcore_verdict():
@@ -156,6 +221,21 @@ def test_compute_new_title_verbatim():
         diff="1.2x", title_verbatim=True) == "song [1.2x] [16bit 44.1kHz]"
 
 
+def test_template_title_slot_sees_cleaned_source(tmp_path):
+    from nightcore.tags import apply_template_tags, parse_tag_template
+    tmpl_file = tmp_path / "t.tmpl"
+    tmpl_file.write_text('title="{title} [Nightcore {diff}]"\n',
+                         encoding="utf-8")
+    tmpl = parse_tag_template(str(tmpl_file))
+    (_, _, _, _, original_title,
+     verbatim) = apply_template_tags(
+         tmpl, tmp_path / "nope.flac", "S [1.25x] [mp3 250k]", "A",
+         slots={"diff": "1.25x", "quality": "", "resample": "",
+                "denightcore": ""})
+    assert verbatim is True
+    assert original_title == "S [Nightcore 1.25x]"
+
+
 def test_template_title_slots_rendered_verbatim(tmp_path):
     from nightcore.tags import apply_template_tags
     tmpl_file = tmp_path / "t.tmpl"
@@ -196,13 +276,41 @@ def test_template_plain_title_verbatim(tmp_path):
 
 
 def test_round_diff_bare():
-    from nightcore.tags import round_diff_bare
+    from nightcore.tags import round_diff_bare, short_num
+    assert short_num(1.2) == "1.2"
+    assert short_num(2.0) == "2"
+    assert short_num(2.166866948) == "2.17"
+    assert short_num(2.5, 0) == "2"
+    assert short_num("abc") == "abc"
     assert round_diff_bare("2.166866948st", 2) == "2.17st"
     assert round_diff_bare("1.2x", 2) == "1.2x"
     assert round_diff_bare("1.2x 2.166866948st", 2) == "1.2x 2.17st"
     assert round_diff_bare("-2.166866948st", 2) == "-2.17st"
     assert round_diff_bare("2.5st", 0) == "2st"
     assert round_diff_bare("", 2) == ""
+
+
+def test_stage_records():
+    from nightcore.plan import stage_records
+    direct = stage_records(
+        [("s", ("direct", "asetrate=44100*1.2"))], sample_rate=44100,
+        speed=1.2, use_qaac=False, qaac_dither=None, cli_backend=False,
+        is_lossy_output=False, enc_fmt="s16")
+    assert direct == {"ffmpeg": ["af=asetrate=44100*1.2"], "sox": [],
+                      "rubberband": []}
+    resample = stage_records(
+        [("s", ("resample", "asetrate=44100*1.2", 96000))],
+        sample_rate=44100, speed=1.2, use_qaac=False, qaac_dither=None,
+        cli_backend=False, is_lossy_output=False, enc_fmt="s16")
+    assert resample["sox"] == ["rate=96000Hz"]
+    assert resample["ffmpeg"][-1].startswith("dither=aresample=")
+    pitch = stage_records(
+        [("s", ("pitch", None, 52920, 3.16, None, []))],
+        sample_rate=44100, speed=1.0, use_qaac=False, qaac_dither=None,
+        cli_backend=False, is_lossy_output=False, enc_fmt="s16")
+    assert pitch["sox"][0] == "rate=52920Hz"
+    assert pitch["rubberband"] == ["-3,-p=3.16"]
+    assert "gain=auto" in pitch["sox"]
 
 
 def test_render_diff_modifier():
@@ -227,6 +335,65 @@ def test_template_comment_stays_literal(tmp_path):
     assert ff_extra["comment"] == "slots like {diff} stay"
 
 
+def test_fold_album_artist():
+    from nightcore.tags import fold_album_artist
+    assert fold_album_artist({"album_artist": "V"}) == {"albumartist": "V"}
+    assert fold_album_artist({"Album_Artist": "V"}) == {"albumartist": "V"}
+    assert fold_album_artist(
+        {"album_artist": "Y", "albumartist": "X"}) == {"albumartist": "Y"}
+    assert fold_album_artist({"artist": "V"}) == {"artist": "V"}
+
+
+def test_template_keys_lowercased(tmp_path):
+    from nightcore.tags import apply_template_tags, parse_tag_template
+    tmpl_file = tmp_path / "t.tmpl"
+    tmpl_file.write_text('Artist="A"\nAlbumArtist="B"\nGenre="G"\n',
+                         encoding="utf-8")
+    tmpl = parse_tag_template(str(tmpl_file))
+    (_, ff_extra, _, artist, _,
+     _) = apply_template_tags(
+         tmpl, tmp_path / "nope.flac", "Song", None, slots={})
+    assert artist == "A"
+    assert ff_extra["artist"] == "A"
+    assert ff_extra["genre"] == "G"
+    # movenc alias preserved here; fold_album_artist normalizes downstream.
+    assert ff_extra["album_artist"] == "B"
+
+
+def test_autorename_base_strips_rendered_groups():
+    from nightcore.tags import autorename_base
+    base = dict(drop_shift=True, drop_rate=True)
+    assert autorename_base(
+        "Code Red", "18 (English Version) [Nightcore 1.2x 2.0st]",
+        "stem", **base) == "Code Red - 18 (English Version)"
+    assert autorename_base(
+        "A", "S [16bit 44.1kHz]", "stem", **base) == "A - S"
+    assert autorename_base(None, "Title", "stem", **base) == "Title"
+    assert autorename_base(
+        "A", "Song [Greatest Hits]", "stem",
+        **base) == "A - Song [Greatest Hits]"
+    assert autorename_base("A", "[1.2x]", "stem", **base) == "A - stem"
+    assert autorename_base(
+        "A", "S [96kHz]", "stem", drop_shift=True,
+        drop_rate=True) == "A - S"
+
+
+def test_autorename_base_keeps_without_replacement():
+    from nightcore.tags import autorename_base
+    # Speed-1.0 transcode: no fresh shift to replace the inherited one.
+    assert autorename_base(
+        "A", "S [1.1x]", "stem", drop_shift=False,
+        drop_rate=True) == "A - S [1.1x]"
+    # No resample: no fresh rate to replace the inherited one.
+    assert autorename_base(
+        "A", "S [96kHz]", "stem", drop_shift=False,
+        drop_rate=False) == "A - S [96kHz]"
+    # Fresh shift invalidates the old rate tag along with the shift.
+    assert autorename_base(
+        "A", "S [96kHz]", "stem", drop_shift=True,
+        drop_rate=False) == "A - S"
+
+
 def test_render_autorename_modes():
     class Args:
         autorename = None
@@ -243,11 +410,53 @@ def test_render_autorename_modes():
                              diff="1.2x") == "Artist - Title [1.2x]"
 
 
+def test_backfill_infers_pitch_tools():
+    from nightcore.tags import backfill_stamp_settings
+    pipe = backfill_stamp_settings(
+        "song [1.2x 2.16st]", sample_rate=52920, bits=16,
+        codec="flac", out_format="flac")
+    assert pipe is not None
+    assert "tools=ffmpeg=" in pipe
+    assert ",sox=" in pipe and ",rubberband=" in pipe
+
+
+def test_augment_pipeline_tools():
+    from nightcore.tags import augment_pipeline_tools
+    thin = "speed=1.2x semitones=2.16st format=flac tools=ffmpeg=n9.0.2"
+    fixed = augment_pipeline_tools(thin)
+    assert ",sox=" in fixed and ",rubberband=" in fixed
+    assert fixed.startswith("speed=1.2x")
+    assert augment_pipeline_tools(fixed) == fixed
+    plain = "speed=1.2x format=flac tools=ffmpeg=n9.0.2"
+    assert augment_pipeline_tools(plain) == plain
+    assert augment_pipeline_tools("") == ""
+    legacy = "speed=1.2x semitones=2.16st format=flac"
+    assert "tools=ffmpeg=" in augment_pipeline_tools(legacy)
+
+
 def test_parse_stamp_shifts_roundtrip():
-    from nightcore.tags import build_stamp_settings
-    settings = build_stamp_settings(speed=1.2, semitones=3.16,
-                                    pitch_mode=True)
-    assert parse_stamp_shifts("Made with nightcore x (y)\n" + settings) == (1.2, 3.16)
+    from nightcore.tags import build_pipeline
+    pipe = build_pipeline(speed=1.2, semitones=3.16, pitch_mode=True,
+                          tools=[("ffmpeg", "n9.0.2")])
+    assert pipe.startswith("NiGhTcOrE ")
+    assert parse_stamp_shifts(pipe) == (1.2, 3.16)
+
+
+def test_parse_stamp_shifts_requires_magic():
+    # Pre-magic records (legacy DESCRIPTION form included) are refused:
+    # only data this tool marked is acted on.
+    assert parse_stamp_shifts(
+        "Made with nightcore.py x (y)\nSettings: speed=1.2x") is None
+    assert parse_stamp_shifts("speed=1.2x format=flac") is None
+    assert parse_stamp_shifts("no settings here") is None
+
+
+def test_ensure_pipeline_magic():
+    from nightcore.tags import ensure_pipeline_magic
+    assert ensure_pipeline_magic("") == ""
+    assert ensure_pipeline_magic("NiGhTcOrE speed=1.2x") == \
+        "NiGhTcOrE speed=1.2x"
+    assert ensure_pipeline_magic("speed=1.2x") == "NiGhTcOrE speed=1.2x"
 
 
 def test_parse_stamp_shifts_rejects_deninghtcore():

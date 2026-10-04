@@ -6,8 +6,8 @@ import sys
 
 from .audio import format_rate, get_audio_info, get_sample_rate, mp3_header_info, next_standard_rate, packet_vbr_info, semitones_from_speed, speed_from_semitones, wav_codec_for
 from .constants import LOSSY_CODECS, OUTPUT_FORMATS
-from .naming import clean_source_title, lossy_suffix_for, strip_denightcore_tags, strip_quality_rate_tags
-from .tags import apply_template_tags, clean_encoder, get_artist, get_title, render_autorename, sanitize_filename
+from .naming import clean_source_title, lossy_suffix_for, split_shift_tags, strip_denightcore_tags, strip_empty_display_tags, strip_quality_rate_tags
+from .tags import apply_template_tags, autorename_base, clean_encoder, display_suffix, fold_album_artist, get_artist, get_title, pipeline_has, pipeline_origin, read_shift_source, render_autorename, round_diff_bare, sanitize_filename
 
 def denightcore_verdict(d_st, target_rate, is_lossy_output, codec,
                         stamp_text=""):
@@ -21,12 +21,11 @@ def denightcore_verdict(d_st, target_rate, is_lossy_output, codec,
     too, because the filename is untrusted.
     """
     stamp_text = stamp_text or ""
-    forward_codec = re.search(r"source-codec=(\S+)", stamp_text)
-    forward_lossy = (forward_codec is not None
-                     and forward_codec.group(1).lower() in LOSSY_CODECS)
+    origin = pipeline_origin(stamp_text)
+    forward_lossy = (origin["codec"] or "").lower() in LOSSY_CODECS
     if (d_st != 0.0 or target_rate is not None or is_lossy_output
             or (codec or "") in LOSSY_CODECS or forward_lossy
-            or "resample=" in stamp_text):
+            or pipeline_has(stamp_text, "resample")):
         return "denightcored NBP"
     return "denightcored BP"
 
@@ -122,18 +121,22 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
     pitch_mode = ((args.pitch or eff_semitones is not None) and speed != 1.0
                   or (args.denightcore and d_st != 0.0))
     if pitch_mode:
-        # In pitch mode the label is semitones; --semitones input is reused
-        # verbatim, otherwise derived from the speed factor. Combo jobs
-        # label both parts: [1.2x 2.166866948st].
+        # In pitch mode the shift is semitones; --semitones input is reused
+        # verbatim, otherwise derived from the speed factor. Full precision
+        # here: diff_bare feeds audio math, -D inversion and template
+        # slots, while mode_suffix below renders the display form.
         st_label = (st_signed if st_signed is not None
                     else semitones_from_speed(speed))
-        # Full precision: negating the label value inverts the shift exactly.
         if combo:
-            mode_suffix = f" [{speed!r}x {st_label!r}st]"
+            diff_bare = f"{speed!r}x {st_label!r}st"
         else:
-            mode_suffix = f" [{st_label!r}st]"
+            diff_bare = f"{st_label!r}st"
     else:
-        mode_suffix = "" if speed == 1.0 else f" [{speed!r}x]"
+        diff_bare = "" if speed == 1.0 else f"{speed!r}x"
+    # Display form for filenames ("[Nightcore 1.2x 2.17st]"): rounded to
+    # 2 decimals like titles. Quality never rides filenames (pipeline +
+    # explicit template {quality} only).
+    mode_suffix = display_suffix(round_diff_bare(diff_bare, 2))
     rate_suffix = f" [{format_rate(target_rate)}]" if target_rate is not None else ""
     # No rubberband extras exist (R3 defaults do everything): pitch jobs
     # run bare. split_shift_tags still strips legacy [rb ...] groups from
@@ -146,12 +149,8 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
         rate_suffix = ""
     # Bare components for --autorename/{diff}/{quality}/
     # {resample} templates (no brackets; the template supplies them).
-    # mode_suffix looks like " [1.2x]" / " [1.2x 2.16st]" / ""; strip the
-    # outer brackets for the bare diff.
-    if mode_suffix.startswith(" [") and mode_suffix.endswith("]"):
-        diff_bare = mode_suffix[2:-1]
-    else:
-        diff_bare = ""
+    # diff_bare is already canonical full-precision (built above); only
+    # mode_suffix carries the display form.
     if middle_suffix.startswith(" [") and middle_suffix.endswith("]"):
         quality_bare = middle_suffix[2:-1]
     else:
@@ -160,6 +159,21 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
         resample_bare = rate_suffix[2:-1]
     else:
         resample_bare = ""
+    # Identity jobs inherit the source record: a speed-1.0 transcode (or
+    # distribution encode) applies no shift of its own, so the file's true
+    # total shift carries on into names, titles, template slots and the
+    # pipeline instead of a blank 1.0x erasing history. Full precision
+    # (the record is machine data); display rounding happens downstream.
+    inherited = None
+    if not diff_bare and denight is None:
+        _parsed, _ = read_shift_source(input_path)
+        if _parsed is not None and (_parsed[0] != 1.0 or _parsed[1] != 0.0):
+            inherited = _parsed
+            _sp, _st = inherited
+            diff_bare = ((f"{_sp!r}x" if _sp != 1.0 else "")
+                         + (" " if _sp != 1.0 and _st != 0.0 else "")
+                         + (f"{_st!r}st" if _st != 0.0 else ""))
+            mode_suffix = display_suffix(round_diff_bare(diff_bare, 2))
     denightcore_bare = ""
     denight_suffix = ""
     if args.denightcore and denight is not None:
@@ -193,8 +207,8 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
         else:
             quality_bare = ""
         diff_bare = ""
-    weird_suffix = mode_suffix + middle_suffix
-    standard_suffix = weird_suffix + rate_suffix
+    weird_suffix = mode_suffix
+    standard_suffix = mode_suffix + rate_suffix
     if args.denightcore and denight is not None:
         # -D names are rebuilt from tags in run_conversion (Artist - Title
         # [quality] [denightcored BP/NBP]); the suffixes below only feed
@@ -203,7 +217,7 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
             denight_suffix + rate_suffix
 
     out_ext = OUTPUT_FORMATS[args.format]["ext"]
-    out_codec = OUTPUT_FORMATS[args.format]["codec"] or wav_codec_for(bits)
+    out_codec = OUTPUT_FORMATS[args.format]["codec"]
     # Collapse sub-16-bit/unknown (lossy, float) sources to 16-bit output:
     # an MP3 carries no more real detail, and float temps would otherwise
     # bloat finals to 32-bit. Genuine 24/32-bit sources keep their depth.
@@ -216,13 +230,18 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
     # Past verdicts go stale on new audio work: drop them here so titles,
     # template {title} slots and bare-autorename bases never accumulate
     # "[denightcored BP] [1.3x] [denightcored BP] ..." across cycles.
-    # Fresh encodes retitle from the source tag, so stale script groups
-    # go too (a re-encode would otherwise duplicate them next to the
-    # fresh tags). Explicit template titles bypass all of this verbatim.
+    # Fresh encodes retitle from the source tag: stale shift groups go
+    # only where fresh tags replace them (a speed-1.0 transcode of a
+    # [1.1x] file keeps describing it), quality groups always (titles
+    # never carry quality; filenames do). Explicit template titles
+    # bypass all of this verbatim.
     # (-D restores instead: run_conversion cleans its title separately.)
-    original_title = strip_denightcore_tags(original_title)
+    original_title = strip_empty_display_tags(
+        strip_denightcore_tags(original_title))
     if denight is None:
-        original_title = clean_source_title(original_title)
+        if diff_bare:
+            original_title = split_shift_tags(original_title)[0]
+        original_title = strip_quality_rate_tags(original_title)
 
     # Tag template: override/keep source tags, strip everything else at
     # encode time. A title=/artist= value may use {slots} (rendered here
@@ -239,6 +258,10 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
              slots={"diff": diff_bare, "quality": quality_bare,
                     "resample": resample_bare,
                     "denightcore": denightcore_bare})
+        if out_ext != ".m4a":
+            # Canonical albumartist everywhere except movenc, which drops
+            # the bare spelling (hence the alias above).
+            ff_extra = fold_album_artist(ff_extra)
 
     if is_lossy_output:
         # Lossy sharing files carry no source-quality or rate tags: strip
@@ -270,9 +293,68 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
         "original_title": original_title,
         "title_base": title_base,
         "title_verbatim": title_verbatim,
+        "inherited": inherited,
         "ff_extra": ff_extra,
         "stub_encoder": stub_encoder,
     }
+
+
+def stage_records(jobs, *, sample_rate, speed, use_qaac, qaac_dither,
+                    cli_backend, is_lossy_output, enc_fmt):
+    """Per-tool stage arguments for the pipeline record, by job plan.
+
+    Mirrors the executor in run_conversion (prescale/settle skip rules
+    must stay in sync with it): ffmpeg audio-filter chains, sox rate
+    targets, rubberband flags, and a gain=auto marker wherever the
+    anti-clip trim is armed (pitch jobs; it fires only on hot masters,
+    measured at runtime). Values carry no spaces (filter chains use
+    ffmpeg's colon syntax). Returns {tool: [stage, ...]}; tools with no
+    stages render bare.
+    """
+    stages = {"ffmpeg": [], "sox": [], "rubberband": []}
+    for _, plan in jobs:
+        kind = plan[0]
+        if kind == "direct":
+            if plan[1] is not None:
+                stages["ffmpeg"].append(f"af={plan[1]}")
+        elif kind == "resample":
+            _, prefilter, target = plan
+            if prefilter is not None:
+                stages["ffmpeg"].append(f"af={prefilter}")
+            stages["sox"].append(f"rate={target}Hz")
+        elif kind == "pitch":
+            _, prefilter, pitched_rate, pitch_st, target, rb = plan
+            if prefilter is not None:
+                stages["ffmpeg"].append(f"af={prefilter}")
+            cur_rate = (round(sample_rate * speed)
+                        if prefilter is not None else sample_rate)
+            if pitch_st >= 0:
+                prescale_to = (target if target is not None
+                               else pitched_rate)
+                if prescale_to != cur_rate:
+                    stages["sox"].append(f"rate={prescale_to}Hz")
+            stages["rubberband"].append(
+                "-3,-p=" + repr(float(pitch_st))
+                + "".join("," + str(e).replace(" ", "=") for e in rb))
+            stages["sox"].append("gain=auto")
+            settle = (target if target is not None
+                      else (pitched_rate if pitch_st < 0 else None))
+            if settle is not None and settle != cur_rate:
+                stages["sox"].append(f"rate={settle}Hz")
+    # Dither on processed 16-bit final encodes (mirrors finalize_wav and
+    # the qaac float-int conversion; direct paths stay bit-perfect).
+    dither = None
+    if use_qaac:
+        dither = qaac_dither
+    elif (not cli_backend
+            and any(plan[0] != "direct" for _, plan in jobs)
+            and not is_lossy_output and enc_fmt == "s16"):
+        dither = enc_fmt
+    if dither is not None:
+        stages["ffmpeg"].append(
+            "dither=aresample=dither_method=triangular:"
+            f"out_sample_fmt={dither}")
+    return stages
 
 
 def predict_audio_stem(args, ctx, audio_path):
@@ -304,19 +386,23 @@ def predict_audio_stem(args, ctx, audio_path):
         # before mirroring, so this branch is unreachable.
         return None
     elif getattr(args, "autorename", None) is None:
-        name_base = strip_denightcore_tags(Path(audio_path).stem)
+        name_base = clean_source_title(Path(audio_path).stem)
     elif args.autorename == "":
-        # Bare --autorename: legacy "Artist - Title" + full suffix.
-        if naming["artist"]:
-            name_base = f"{naming['artist']} - {naming['original_title']}"
-        else:
-            name_base = naming["original_title"]
+        # Bare --autorename: legacy "Artist - Title" + full suffix
+        # (script groups leave the base only where the suffix re-adds
+        # them -- see autorename_base).
+        name_base = autorename_base(
+            naming["artist"], naming["original_title"],
+            strip_denightcore_tags(Path(audio_path).stem),
+            drop_shift=bool(naming["diff_bare"]),
+            drop_rate=bool(naming["resample_bare"]))
     else:
         # Custom --autorename TEMPLATE already carries its own
         # {diff}/{quality}/{resample} slots: no suffix appended.
         custom = render_autorename(
             args, naming["artist"], naming["original_title"],
-            strip_denightcore_tags(Path(audio_path).stem),
+            strip_empty_display_tags(
+                strip_denightcore_tags(Path(audio_path).stem)),
             diff=naming["diff_bare"],
             quality=naming["quality_bare"],
             resample=naming["resample_bare"],

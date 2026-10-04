@@ -4,7 +4,17 @@ import re
 
 # Provenance stamp (--no-stamp disables): written to this tag on every output, and
 # the project URL embedded in the stamp text (also in pyproject.toml).
+# Pipeline stamp (--no-pipeline disables): machine-readable encode record
+# (shift, resample, format, source fingerprint, tool versions) that -D reads
+# back. Separate tag so branding and data can be controlled independently.
+# "nightcore.py" names the project; bare "nightcore" is the binary.
 STAMP_TAG = "description"
+PIPELINE_TAG = "encoder_settings"
+# Magic marker prefixing every pipeline record we write. Readers refuse
+# records without it ("magic number not found") so foreign tags that
+# happen to look like ours are never acted on. -N adds it to old
+# records it touches; pre-magic files gain it via a retag round.
+PIPELINE_MAGIC = "NiGhTcOrE"
 PROJECT_URL = "https://git.lusosterone.net/lev/nightcore"
 
 # Codecs reported by ffprobe (stream codec_name, lowercased) that are
@@ -50,18 +60,20 @@ STANDARD_SAMPLE_RATES = [
 
 # Output formats: extension + encoder selection. Automatic quality defaults
 # exist only for lossless output, tuned for most compression (FLAC level
-# 12; ALAC/WAV have no knobs -- their defaults are already optimal).
+# 12; ALAC has no knobs -- its default is already optimal).
 # Lossy formats prefer the best native frontend (verified binary, ffmpeg
 # fallback) but carry zero baked-in quality: --lossy-opts is mandatory
 # for them (fail loudly otherwise), and rates are left alone unless -R
 # is given -- the encoder choking on a weird rate is the user's signal
 # to resample or retune it themselves.
-# "wav" uses a depth-matched PCM codec (see wav_codec_for()).
+# WAV is input-only (no tags or pictures survive its muxer, so -D could
+# never read it back and covers would silently vanish).
+# "wav" used a depth-matched PCM codec (see wav_codec_for(), still used
+# for temp WAVs and depth matching).
 OUTPUT_FORMATS = {
     "flac": {"ext": ".flac", "codec": "flac", "lossy": False,
              "ffmpeg_args": ["-compression_level", "12"]},
     "alac": {"ext": ".m4a", "codec": "alac", "lossy": False},
-    "wav": {"ext": ".wav", "codec": None, "lossy": False},
     "mp3": {"ext": ".mp3", "codec": "libmp3lame", "lossy": True},
     "opus": {"ext": ".opus", "codec": "libopus", "lossy": True},
     "aac": {"ext": ".m4a", "codec": "aac", "lossy": True},

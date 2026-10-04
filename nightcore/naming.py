@@ -3,7 +3,7 @@
 from pathlib import Path
 import re
 
-from .constants import LOSSY_CODECS, _BITRATE_TAG, _DEPTH_TAG, _RATE_TOKEN, _SHIFT_TOKEN
+from .constants import LOSSY_CODECS, _BITRATE_TAG, _DEPTH_TAG, _QUALITY_CODECS, _RATE_TOKEN, _SHIFT_TOKEN
 
 def strip_denightcore_tags(name):
     """Remove our own [denightcore ...] verdict groups; return cleaned name.
@@ -42,6 +42,59 @@ def strip_empty_display_tags(name):
     return " ".join(
         re.sub(r"\[nightcore\s*\]", "", name,
                flags=re.IGNORECASE).split())
+
+
+_QUALITY_GROUP = re.compile(
+    r"^\[([\w-]+)(?:\s+(VBR|CBR))?\s+(\d+)k(?:\s+(.*?))?\]$",
+    re.IGNORECASE)
+_DEPTH_GROUP = re.compile(r"^\[(\d+)bit\s+(\d+(?:\.\d+)?)kHz\]$",
+                          re.IGNORECASE)
+_BARE_RATE_GROUP = re.compile(r"^(\d+(?:\.\d+)?)kHz$", re.IGNORECASE)
+
+
+def recover_filename_quality(stem):
+    """Recover our filename quality/resample groups plus parsed origin.
+
+    Reads [codec [mode] bitratek [encoder]] and [Nbit N.NkHz] groups and
+    a trailing bare [NkHz] resample group out of a stem, verbatim. Shift
+    and foreign brackets are ignored. Returns {"suffix", "codec", "mode",
+    "bitrate_kbps", "encoder", "depth", "rate_hz"} -- codec in
+    probe-style underscore form so verdict checks match, Nones when
+    absent. The filename was written from true probe data at encode
+    time, so for origin questions it outranks the container probe (a
+    FLAC wrapping an MP3 probes as flac).
+    """
+    quality = resample = ""
+    codec = mode = bitrate_kbps = encoder = depth = rate_hz = None
+    resample_hz = None
+    for m in re.finditer(r"\[([^\[\]]*)\]", stem):
+        full = m.group(0)
+        inner = m.group(1).strip()
+        qm = _QUALITY_GROUP.match(full)
+        if (qm and qm.group(1).lower().replace("_", "-")
+                in _QUALITY_CODECS and not quality):
+            quality = full
+            codec = qm.group(1).lower().replace("-", "_")
+            mode = (qm.group(2) or "").upper() or None
+            bitrate_kbps = int(qm.group(3))
+            encoder = (qm.group(4) or "").strip() or None
+            continue
+        dm = _DEPTH_GROUP.match(full)
+        if dm and not quality:
+            quality = full
+            depth = int(dm.group(1))
+            rate_hz = round(float(dm.group(2)) * 1000)
+            continue
+        rm = _BARE_RATE_GROUP.match(inner)
+        if rm:
+            resample = full
+            resample_hz = round(float(rm.group(1)) * 1000)
+    suffix = (f" {quality}" if quality else "") + \
+        (f" {resample}" if resample else "")
+    return {"suffix": suffix, "codec": codec, "mode": mode,
+            "bitrate_kbps": bitrate_kbps,
+            "encoder": encoder, "depth": depth, "rate_hz": rate_hz,
+            "resample_hz": resample_hz}
 
 
 def split_shift_tags(name):
@@ -94,6 +147,32 @@ def split_shift_tags(name):
     return cleaned, speed, st, found, (rb_groups[-1] if rb_groups else None)
 
 
+def strip_quality_tags(name):
+    """Remove quality [...] groups only ([16bit 44.1kHz],
+    [mp3 CBR 320k LAME3.100]). Bare rate tags stay (see
+    strip_rate_tags); anything else stays verbatim.
+    """
+    def _strip(m):
+        if _BITRATE_TAG.match(m.group(0)) or _DEPTH_TAG.match(m.group(0)):
+            return ""
+        return m.group(0)
+
+    return " ".join(re.sub(r"\[([^\[\]]*)\]", _strip, name).split())
+
+
+def strip_rate_tags(name):
+    """Remove bare rate [...] groups only ([88.2kHz], [96kHz]).
+    Anything else stays verbatim.
+    """
+    def _strip(m):
+        toks = m.group(1).split()
+        if toks and all(_RATE_TOKEN.match(t) for t in toks):
+            return ""
+        return m.group(0)
+
+    return " ".join(re.sub(r"\[([^\[\]]*)\]", _strip, name).split())
+
+
 def strip_quality_rate_tags(name):
     """Remove quality/rate [...] groups; return the cleaned name.
 
@@ -103,15 +182,7 @@ def strip_quality_rate_tags(name):
     so real title brackets (e.g. [Greatest Hits], [Opus 1]) survive.
     Used for lossy outputs, which carry no source-quality or rate tags.
     """
-    def _strip(m):
-        toks = m.group(1).split()
-        if toks and all(_RATE_TOKEN.match(t) for t in toks):
-            return ""
-        if _BITRATE_TAG.match(m.group(0)) or _DEPTH_TAG.match(m.group(0)):
-            return ""
-        return m.group(0)
-
-    return " ".join(re.sub(r"\[([^\[\]]*)\]", _strip, name).split())
+    return strip_rate_tags(strip_quality_tags(name))
 
 
 def lossy_suffix_for(codec, bit_rate, mode=None, encoder=None):

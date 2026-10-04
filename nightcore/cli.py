@@ -78,7 +78,7 @@ def parse_arguments():
         choices=sorted(OUTPUT_FORMATS),
         default="flac",
         metavar="FMT",
-        help="Output format: flac (default), alac, wav, mp3, opus, aac"
+        help="Output format: flac (default), alac, mp3, opus, aac"
     )
 
     parser.add_argument(
@@ -113,7 +113,8 @@ def parse_arguments():
         help=(
             "Pitch-shift only, keep duration (needs rubberband;\n"
             "a modifier on -s/-S: the amount comes from there)\n"
-            "Labelled [Nst] full precision; negating reverses it"
+            "Labelled [Nst] rounded to 2 decimals for display (exact\n"
+            "values live in the pipeline tag; -D inverts exactly)"
         )
     )
 
@@ -142,9 +143,10 @@ def parse_arguments():
         help="Rename output via a filename-stem template with bare\n"
              "{artist} {title} {diff} {quality} {resample} {denightcore}\n"
              "slots (bare flag keeps legacy 'Artist - Title [tags]';\n"
+             "quality never rides fresh names, pipeline keeps it;\n"
              "default keeps the input filename, appends params;\n"
              "denightcore outputs default to\n"
-             "'Artist - Title [quality] [denightcored BP/NBP]';\n"
+             "'Artist - Title [denightcored BP/NBP]';\n"
              "bare flag goes last, or use --autorename=)"
     )
 
@@ -160,11 +162,18 @@ def parse_arguments():
         "--no-stamp",
         action="store_true",
         default=False,
-        help="Skip the DESCRIPTION provenance stamp (default: every output\n"
-             "is stamped 'Made with nightcore <version> (<url>)' plus a\n"
-             "Settings line with the encode parameters, so a renamed file\n"
-             "still carries enough info to reverse it; overrides any\n"
-             "template description; FLAC outputs then require metaflac)"
+        help="Skip the 'Made with nightcore.py' DESCRIPTION provenance tag\n"
+             "(default: every output carries it, overriding any template\n"
+             "description; mapped source copies are scrubbed too)"
+    )
+
+    parser.add_argument(
+        "--no-pipeline",
+        action="store_true",
+        default=False,
+        help="Skip the encoder_settings pipeline tag (shift, resample,\n"
+             "source fingerprint, tool versions; what --denightcore reads).\n"
+             "Default writes it (mapped source copies are scrubbed too)"
     )
 
     parser.add_argument(
@@ -191,8 +200,9 @@ def parse_arguments():
         "--in-place",
         action="store_true",
         default=False,
-        help="With -N --batch: renametag alongside the inputs instead of\n"
-             "copying to ./renametag/ (asks [y/N] first: originals move)"
+        help="With -N: renametag alongside the inputs instead of\n"
+             "copying to ./renametag/ (asks [y/N] first: originals move;\n"
+             "cannot be combined with -o or --output-folder)"
     )
 
     parser.add_argument(
@@ -200,8 +210,9 @@ def parse_arguments():
         action="store_true",
         default=False,
         help="Renametag mode: rewrite tags and rename via stream copy,\n"
-             "no audio processing (batch copies to ./renametag/,\n"
-             "single-file renames alongside). -F is ignored (container\n"
+             "no audio processing (copies land in ./renametag/, originals\n"
+             "stay; --in-place moves alongside instead, -o names the copy\n"
+             "verbatim). -F is ignored (container\n"
              "kept); -s/-S/-p/-r/-R/-D are errors. A stamp without\n"
              "Settings gains them backfilled from filename tags when\n"
              "present (stamps with Settings are preserved as-is)"
@@ -514,6 +525,11 @@ def main():
         print("Error: --in-place cannot be combined with --output-folder "
               "(in place means alongside the inputs)", file=sys.stderr)
         return 1
+    if args.in_place and args.output is not None:
+        print("Error: --in-place cannot be combined with -o/--output "
+              "(an explicit output is already a copy, nothing to move)",
+              file=sys.stderr)
+        return 1
     if args.output_folder is not None:
         od = Path(args.output_folder)
         if od.exists() and not od.is_dir():
@@ -598,6 +614,7 @@ def main():
         "lossy_opts": lossy_opts,
         "backend": backend,
         "no_stamp": args.no_stamp,
+        "no_pipeline": args.no_pipeline,
         "speed": speed,
         "combo": combo,
         "st_signed": st_signed,
@@ -701,7 +718,27 @@ def main():
         print("Error: input file is required", file=sys.stderr)
         return 1
     if retags:
-        rc = run_renametag(args, Path(args.input), None, ctx)
+        # Single-file retags copy to ./renametag/ like batch (originals
+        # stay); --in-place moves alongside instead (asks [y/N] first),
+        # -o names the copy verbatim.
+        op_base = None
+        if args.output is None:
+            if args.in_place and not args.dry_run:
+                try:
+                    answer = input(
+                        f"Renametag {Path(args.input).name} in place? "
+                        f"Original will be renamed and overwritten. "
+                        f"[y/N] ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    answer = ""
+                if answer != "y":
+                    print("Aborted.", file=sys.stderr)
+                    return 1
+            op_base = (None if args.in_place else
+                       batch_op_dir(args, "renametag"))
+            if op_base is not None and not args.dry_run:
+                op_base.mkdir(parents=True, exist_ok=True)
+        rc = run_renametag(args, Path(args.input), op_base, ctx)
     else:
         rc = run_conversion(args, Path(args.input), None, ctx)
     print_summary(ctx)

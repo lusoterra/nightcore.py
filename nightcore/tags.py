@@ -6,7 +6,7 @@ import re
 
 from . import __version__
 from .audio import probe_audio
-from .constants import _BITRATE_TAG, _DEPTH_TAG, _RATE_TOKEN, _SHIFT_TOKEN, _TAG_ALIASES, PROJECT_URL, STAMP_TAG
+from .constants import _BITRATE_TAG, _DEPTH_TAG, _RATE_TOKEN, _SHIFT_TOKEN, _TAG_ALIASES, PIPELINE_MAGIC, PIPELINE_TAG, PROJECT_URL, STAMP_TAG
 from .native_tags import native_format_tags
 
 def parse_tag_template(path):
@@ -93,32 +93,34 @@ def read_tags(input_path, *names):
     }
 
 
-def tool_stamp(settings=None):
-    """Provenance string for stamped outputs (default: always on).
+def tool_stamp():
+    """Provenance string for stamped outputs (--no-stamp disables).
 
     Written to the STAMP_TAG (DESCRIPTION) tag on every output; an
     explicit per-run mark, so it overrides any template description.
-    When settings is given (encode parameters), it rides on a second
-    line so a renamed file still carries enough info to reverse the
-    job later with --denightcore.
+    Branding only -- the machine-readable pipeline lives in PIPELINE_TAG
+    (build_pipeline) so the two can be controlled independently.
+    "nightcore.py" names the project; bare "nightcore" is the binary.
     """
-    base = f"Made with nightcore {__version__} ({PROJECT_URL})"
-    if settings:
-        return f"{base}\n{settings}"
-    return base
+    return f"Made with nightcore.py {__version__} ({PROJECT_URL})"
 
 
-def build_stamp_settings(*, speed=1.0, semitones=0.0, pitch_mode=False,
-                         target_rate=None, out_format="flac",
-                         lossy_opts=(), source_rate=None, source_bits=None,
-                         source_codec=None, denightcore=None):
-    """One-line settings payload for the stamp's second line.
+def build_pipeline(*, speed=1.0, semitones=0.0, pitch_mode=False,
+                   target_rate=None, out_format="flac", lossy_opts=(),
+                   source_rate=None, source_bits=None, source_codec=None,
+                   source_mode=None, source_bitrate=None,
+                   source_encoder=None, denightcore=None, tools=(),
+                   stages=None):
+    """Machine-readable encode record for PIPELINE_TAG (opusenc-style).
 
-    Carries everything needed to reverse the job: the effective speed
-    factor and semitone shift applied. Resample target, output format
-    and source fingerprint ride along for context. Space-separated
-    key=value pairs (no spaces in values) so denightcore can parse it
-    back even when the filename tags are gone.
+    Carries everything needed to remake or reverse the job: the
+    effective speed factor and semitone shift applied, resample target,
+    output format, source fingerprint, the lossy encoder flags when any,
+    and the versions of the tools that ran (ffmpeg first, in pipeline
+    order), each with the stage arguments it ran (audio-filter chains,
+    sox rate targets, rubberband flags, dither). Space-separated key=value
+    grammar shared with the legacy DESCRIPTION Settings line, so
+    denightcore parses either tag, filenames or no.
     """
     parts = [f"speed={speed!r}x"]
     if pitch_mode or (semitones is not None and semitones != 0.0):
@@ -134,55 +136,229 @@ def build_stamp_settings(*, speed=1.0, semitones=0.0, pitch_mode=False,
         parts.append(f"source-depth={source_bits}bit")
     if source_codec:
         parts.append(f"source-codec={source_codec}")
+    if source_mode:
+        parts.append(f"source-mode={source_mode}")
+    if source_bitrate:
+        parts.append(f"source-bitrate={source_bitrate}")
+    if source_encoder:
+        parts.append(f"source-encoder={source_encoder}")
     if denightcore:
         parts.append(f"denightcore={denightcore}")
-    return "Settings: " + " ".join(parts)
+    if tools:
+        parts.append("tools=" + ",".join(
+            f"{name}={version}" + (
+                f"[{','.join((stages or {}).get(name, []))}]"
+                if stages and stages.get(name) else "")
+            for name, version in tools))
+    return f"{PIPELINE_MAGIC} " + " ".join(parts)
+
+
+def ensure_pipeline_magic(text):
+    """Prepend the pipeline magic marker unless already present.
+
+    Used when -N normalizes old records (preserved or migrated): the
+    content is untouched, only the marker is ensured, so strict readers
+    accept it afterwards. Empty input stays empty.
+    """
+    stripped = (text or "").strip()
+    if not stripped or stripped.startswith(PIPELINE_MAGIC):
+        return stripped
+    return f"{PIPELINE_MAGIC} {stripped}"
+
+
+def display_suffix(diff):
+    """Filename diff suffix in display form (" [Nightcore 1.2x]").
+
+    `diff` is the bare rounded label (format_diff_label output); empty
+    diff renders nothing. Single source for the shape so fresh encodes,
+    -D-adjacent paths and renametag rebuilds all print it identically.
+    """
+    return f" [Nightcore {diff}]" if (diff or "").strip() else ""
+
+
+def format_diff_label(speed=1.0, st=0.0):
+    """Bare diff label from a (speed, semitones) pair: "1.2x", "2.17st",
+    "1.2x 2.17st" or "" when there is no shift. Display precision (2
+    decimals); audio math and pipeline records use full precision.
+    """
+    parts = []
+    if speed != 1.0:
+        parts.append(f"{short_num(speed)}x")
+    if st != 0.0:
+        parts.append(f"{short_num(st)}st")
+    return " ".join(parts)
 
 
 def backfill_stamp_settings(stem, *, sample_rate=None, bits=None,
-                            codec=None, out_format="flac"):
-    """Rebuild a stamp Settings line from filename shift tags, or None.
+                            codec=None, out_format="flac", origin=None):
+    """Rebuild a pipeline record from filename tags, or None.
 
     Reads [Nx]/[Nst]/[Nightcore Nx] groups out of a stem left behind by
     an older run (or a rename that kept them) so renametag mode can write
-    a proper stamp -- and a later -D can undo from it. Restored rate and
-    depth describe the pre-shift audio, matching what a forward job would
-    have recorded. Returns None when the stem carries no shift tags.
+    a proper pipeline -- and a later -D can undo from it. The origin
+    fingerprint prefers the filename quality groups (see
+    recover_filename_quality): the container probe cannot see through a
+    lossless wrapper around a lossy source. A trailing bare [rate] group
+    is recorded as the resample target. Returns None when the stem
+    carries no shift tags.
     """
     from .audio import speed_from_semitones
     from .naming import split_shift_tags
     _, speed, st, found, _ = split_shift_tags(stem)
     if not found or not speed:
         return None
-    restored = None
-    if sample_rate is not None:
+    origin = origin or {}
+    bitrate = (f"{origin['bitrate_kbps']}k"
+               if origin.get("bitrate_kbps") else None)
+    if origin.get("codec"):
+        codec = origin["codec"]
+    elif origin.get("depth") is not None:
+        bits = origin["depth"]
+    if origin.get("rate_hz") is not None:
+        restored = origin["rate_hz"]
+    elif sample_rate is not None:
         try:
             restored = round(
                 sample_rate / speed / speed_from_semitones(st))
         except (ValueError, ZeroDivisionError, OverflowError):
             restored = None
-    return build_stamp_settings(
+    else:
+        restored = None
+    # Tool record, inferred from structure: our pipeline always pairs
+    # pitch with sox+rubberband and resampling with sox, so a tag-only
+    # recovery still names the stages that must have run.
+    from .backends import tool_version
+    _tools = ["ffmpeg"]
+    if st != 0.0 or origin.get("resample_hz") is not None:
+        _tools.append("sox")
+    if st != 0.0:
+        _tools.append("rubberband")
+    return build_pipeline(
         speed=speed, semitones=st, pitch_mode=(st != 0.0),
-        target_rate=None, out_format=out_format, lossy_opts=(),
-        source_rate=restored, source_bits=bits, source_codec=codec)
+        target_rate=origin.get("resample_hz"), out_format=out_format,
+        lossy_opts=(), source_rate=restored, source_bits=bits,
+        source_codec=codec, source_mode=origin.get("mode"),
+        source_bitrate=bitrate,
+        source_encoder=origin.get("encoder"),
+        tools=[(t, tool_version(t)) for t in _tools])
+
+
+def augment_pipeline_tools(pipe_text):
+    """Add provably-missing stage tools to a pipeline record.
+
+    A record with semitones= must have run rubberband (and sox for its
+    rate steps); one with resample= must have run sox. Old records that
+    predate tool recording (or filename-only backfills from before the
+    inference) gain exactly those entries, with versions probed live;
+    complete records pass through untouched. Stage tools only: lossy CLI
+    encoders and metaflac can't be proven from parameters, so they are
+    never added here.
+    """
+    from .backends import tool_version
+    if not pipe_text or not pipe_text.strip():
+        return pipe_text
+    st = 0.0
+    m_st = re.search(r"semitones=(-?\d+(?:\.\d+)?)st", pipe_text)
+    if m_st:
+        try:
+            st = float(m_st.group(1))
+        except ValueError:
+            st = 0.0
+    want = ["ffmpeg"]
+    if st != 0.0 or "resample=" in pipe_text:
+        want.append("sox")
+    if st != 0.0:
+        want.append("rubberband")
+    present = set(re.findall(r"(?:^|[\s,=])(ffmpeg|sox|rubberband)=",
+                             pipe_text))
+    missing = [t for t in want if t not in present]
+    if not missing:
+        return pipe_text
+    added = ",".join(f"{t}={tool_version(t)}" for t in missing)
+    if "tools=" not in pipe_text:
+        return pipe_text.rstrip() + f" tools={added}"
+    return re.sub(r"tools=([^\s]+)",
+                  lambda m: f"tools={m.group(1)},{added}", pipe_text,
+                  count=1)
+
+
+def pipeline_has(text, key):
+    """True when the pipeline record sets key as a standalone entry.
+
+    Delimited matching: stage arguments like dither=aresample=... must
+    not trip over key names they merely contain.
+    """
+    return re.search(r"(?:^|\s)" + re.escape(key) + "=",
+                     text or "") is not None
+
+
+def pipeline_origin(text):
+    """{codec, mode, bitrate, encoder, depth, rate} parsed from a pipeline
+    record (raw strings, e.g. bitrate "320k", depth "16bit"). All None
+    when absent. Used to carry a known lossy origin through -D instead
+    of re-probing the wrapper container.
+    """
+    def _grab(key):
+        match = re.search(r"(?:^|\s)" + key + r"=([^\s]+)", text or "")
+        return match.group(1) if match else None
+
+    def _int(value, suffix):
+        if value and value.endswith(suffix):
+            try:
+                return int(value[:-len(suffix)])
+            except ValueError:
+                return None
+        return None
+
+    bitrate = _grab("source-bitrate")
+    depth = _grab("source-depth")
+    rate = _grab("source-rate")
+    return {"codec": _grab("source-codec"),
+            "mode": _grab("source-mode"),
+            "bitrate": bitrate,
+            "encoder": _grab("source-encoder"),
+            "depth": _int(depth, "bit"),
+            "rate": _int(rate, "Hz")}
+
+
+def read_shift_source(input_path):
+    """((speed, semitones) or None, raw tag text) for --denightcore.
+
+    Reads the machine-readable PIPELINE_TAG, falling back to a legacy
+    DESCRIPTION Settings line (pre-split files). Filenames are never
+    consulted. The raw text rides along for verdict checks (resample=,
+    source-codec=). Restoration records never parse: a denightcored
+    file has nothing left to invert.
+    """
+    for tag in (PIPELINE_TAG, STAMP_TAG):
+        text = read_format_tag(input_path, tag)
+        if not text:
+            continue
+        parsed = parse_stamp_shifts(text)
+        if parsed is not None:
+            return parsed, text
+    return None, ""
 
 
 def parse_stamp_shifts(stamp_text):
-    """(speed, semitones) recovered from a stamp settings line, or None.
+    """(speed, semitones) recovered from tag pipeline text, or None.
 
-    Reads the machine-readable second line written by
-    build_stamp_settings (speed=<float>x, semitones=<float>st). Used by
-    --denightcore as a fallback when the filename carries no shift
-    tags. Returns None when nothing parseable is found.
+    Reads the machine-readable grammar written by build_pipeline
+    (speed=<float>x, semitones=<float>st). The pipeline magic marker is
+    required: records without it (foreign tags, pre-magic stamps) are
+    refused so nothing ever acts on data it did not write. Returns None
+    when nothing parseable is found.
     """
     if not stamp_text:
         return None
-    if "denightcore=" in stamp_text:
+    if not stamp_text.strip().startswith(PIPELINE_MAGIC):
+        return None
+    if pipeline_has(stamp_text, "denightcore"):
         # Restoration records (written by -D outputs) must never feed
         # another undo: a denightcored file has nothing left to invert.
         return None
-    m_speed = re.search(r"speed=(-?\d+(?:\.\d+)?)x", stamp_text)
-    m_st = re.search(r"semitones=(-?\d+(?:\.\d+)?)st", stamp_text)
+    m_speed = re.search(r"(?:^|\s)speed=(-?\d+(?:\.\d+)?)x", stamp_text)
+    m_st = re.search(r"(?:^|\s)semitones=(-?\d+(?:\.\d+)?)st", stamp_text)
     if m_speed is None and m_st is None:
         return None
     try:
@@ -318,6 +494,34 @@ def compute_new_title(tmpl, title_base, original_title, suffix,
     return original_title
 
 
+def autorename_base(artist, rendered_title, fallback_stem, *,
+                      drop_shift, drop_rate):
+    """Bare --autorename base: "Artist - Title" (artist prefix omitted
+    without an artist tag).
+
+    Quality groups always go (filenames never carry quality anymore;
+    the pipeline and explicit template {quality} do). Shift and bare
+    rate groups go only where the filename suffix re-adds them:
+    stripping a speed-1.0 transcode's inherited [1.1x] with nothing
+    replacing it would delete true information. Verdicts and vacant
+    display groups always go (never rewritten). Foreign brackets
+    survive; an emptied title falls back to the stem.
+    """
+    from .naming import (split_shift_tags, strip_denightcore_tags,
+                         strip_empty_display_tags, strip_quality_tags,
+                         strip_rate_tags)
+    title = strip_empty_display_tags(strip_denightcore_tags(rendered_title))
+    if drop_shift:
+        title = split_shift_tags(title)[0]
+    title = strip_quality_tags(title)
+    if drop_rate:
+        title = strip_rate_tags(title)
+    title = title.strip() or fallback_stem
+    if artist:
+        return f"{artist} - " + title
+    return title
+
+
 def render_autorename(args, artist, title, fallback_stem, *, diff="",
                       quality="", resample="", denightcore=""):
     """Filename stem for --autorename (bare or TEMPLATE), or None if off.
@@ -361,23 +565,30 @@ def template_uses_slots(value):
     return _SLOT_PATTERN.search(str(value)) is not None
 
 
+def short_num(value, places=2):
+    """Round a number for display: 2.166866948 -> "2.17", 2.0 -> "2".
+
+    Trailing zeros are stripped so exact values stay clean. Display-only;
+    audio math and the pipeline record always use full precision.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if places == 0:
+        return str(int(round(number)))
+    return f"{round(number, places):.{places}f}".rstrip("0").rstrip(".")
+
+
 def round_diff_bare(diff, places):
     """Round every number in a bare diff string to `places` decimals.
 
     "2.166866948st" with 2 -> "2.17st"; combos round each number
-    ("1.2x 2.166st" -> "1.2x 2.17st"). Trailing zeros are stripped, so
-    exact values stay clean ("1.2x", not "1.20x"). Display-only: the
-    filename and stamp always keep full precision.
+    ("1.2x 2.166st" -> "1.2x 2.17st"). Display-only: audio math and the
+    pipeline record always keep full precision.
     """
-    def _round(m):
-        try:
-            value = float(m.group(0))
-        except ValueError:
-            return m.group(0)
-        if places == 0:
-            return str(int(round(value)))
-        return f"{round(value, places):.{places}f}".rstrip("0").rstrip(".")
-    return re.sub(r"-?\d+(?:\.\d+)?", _round, diff or "")
+    return re.sub(r"-?\d+(?:\.\d+)?",
+                  lambda m: short_num(m.group(0), places), diff or "")
 
 
 def apply_template_tags(tmpl, input_path, original_title, artist,
@@ -405,8 +616,13 @@ def apply_template_tags(tmpl, input_path, original_title, artist,
     title_base = original_title
     stub_encoder = None
     title_verbatim = False
+    # The {title} slot always sees the source title cleaned of our script
+    # groups (a template re-rendering "{title} [Nightcore {diff}]" must
+    # not duplicate stale "[1.2x]" groups riding in from an old file).
+    # Everything else (fallbacks, explicit literals) is untouched.
+    from .naming import clean_source_title
     src_slots = title_context(
-        title=original_title, artist=artist or "",
+        title=clean_source_title(original_title), artist=artist or "",
         diff=(slots or {}).get("diff", ""),
         quality=(slots or {}).get("quality", ""),
         resample=(slots or {}).get("resample", ""),
@@ -431,10 +647,15 @@ def apply_template_tags(tmpl, input_path, original_title, artist,
     keep_src = [k for k, (_, v) in tmpl.items()
                 if v is None and k not in ("title", "artist")]
     src_vals = read_tags(input_path, *keep_src) if keep_src else {}
-    for low, (origkey, val) in tmpl.items():
+    for low, (_, val) in tmpl.items():
         if low in ("title", "artist"):
             continue
-        key = _TAG_ALIASES.get(low, origkey)
+        # Lowercase tag names at the template layer: Vorbis comments are
+        # case-insensitive, MP3 frame mapping and movenc atoms resolve
+        # lowercase keys to the proper frames/atoms (verified), and every
+        # reader here already compares case-insensitively. The movenc
+        # albumartist alias below is unaffected (already lowercase).
+        key = _TAG_ALIASES.get(low, low)
         if val is not None:
             ff_extra[key] = val
         elif low in src_vals:
@@ -453,6 +674,22 @@ def apply_template_tags(tmpl, input_path, original_title, artist,
     original_title = title_base
     return (title_base, ff_extra, stub_encoder, artist, original_title,
             title_verbatim)
+
+
+def fold_album_artist(tags):
+    """Return mapping with any album_artist spelling folded to albumartist.
+
+    ALBUMARTIST is the canonical Vorbis/ID3 form (what Picard writes and
+    players expect); the movenc alias (albumartist -> album_artist, needed
+    because movenc drops the bare spelling) must not leak into other
+    containers. The album_artist value wins when both spellings somehow
+    coexist. Case-insensitive; never raises.
+    """
+    out = dict(tags)
+    hits = [k for k in out if str(k).lower() == "album_artist"]
+    for key in hits:
+        out["albumartist"] = out.pop(key)
+    return out
 
 
 def flac_comment_wants(tmpl, ff_extra, input_path, out_ext, no_delete):

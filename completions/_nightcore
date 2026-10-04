@@ -12,8 +12,8 @@ _nightcore() {
         '--reciprocal[Use reciprocal of speed (1.2 becomes 1\/1.2)]' \
         '-R[Resample output to the next higher standard sample rate]' \
         '--resample[Resample output to the next higher standard sample rate]' \
-        '-F+[Output format]:format:(flac alac wav mp3 opus aac)' \
-        '--format+[Output format]:format:(flac alac wav mp3 opus aac)' \
+        '-F+[Output format]:format:(flac alac mp3 opus aac)' \
+        '--format+[Output format]:format:(flac alac mp3 opus aac)' \
         '--lossy-opts-[Extra lossy encoder flags (use --opt="...")]: : ' \
         '--batch+[Convert directory to .\/encodes\/format]:dir:_files -\/' \
         '-p[Pitch-shift only (duration preserved) instead of speeding up]' \
@@ -35,6 +35,7 @@ _nightcore() {
         '--output-folder+[Base directory for batch folders]:dir:_files -/' \
         '--no-delete-tags[With template: keep unlisted source tags]' \
         '--no-stamp[Skip the DESCRIPTION provenance stamp]' \
+        '--no-pipeline[Skip the encoder_settings pipeline tag]' \
         '--tag-template+[Tag template file]:template:_files' \
         '--cover+[Cover artwork PNG/JPG]:image:_files -g "*.png *.jpg *.jpeg (#i)"' \
         '--version[Print version and exit]' \
