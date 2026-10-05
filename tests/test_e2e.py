@@ -361,3 +361,77 @@ def test_identity_transcode_inherits_shift(monkeypatch, capsys, tmp_path):
     assert title is not None and "[Nightcore 1.1x]" in title
     pipe = read_format_tag(out, "encoder_settings")
     assert pipe is not None and "speed=1.1x" in pipe
+
+
+def test_pitch_path_uses_tamed_wav(monkeypatch, capsys, tmp_path):
+    """The pitch job must encode the wav tame_hot_wav() returns.
+
+    Regression test: `cur = tmp3` after the tame call discarded the
+    headroom trim, silently encoding the untrimmed rubberband output.
+    A sentinel stands in for the trimmed file; only its duration
+    can survive to the output if the wiring is correct.
+    """
+    _require_tools("ffmpeg", "ffprobe", "sox", "rubberband")
+    import nightcore.convert as conv
+    src = tmp_path / "src.wav"
+    subprocess.run(
+        ["sox", "-n", "-r", "48000", str(src), "synth", "2", "sine", "440"],
+        check=True, capture_output=True,
+    )
+    sentinel = tmp_path / "sentinel.wav"
+    subprocess.run(
+        ["sox", "-n", "-r", "48000", str(sentinel), "synth", "1", "sine",
+         "880"],
+        check=True, capture_output=True,
+    )
+    monkeypatch.setattr(
+        conv, "tame_hot_wav", lambda path, make_temp: (str(sentinel), True))
+    out = tmp_path / "out.flac"
+    rc, _ = _run(monkeypatch, capsys,
+                 [str(src), "-S", "2", "-o", str(out)])
+    assert rc == 0
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(out)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert abs(float(probe) - 1.0) < 0.1
+
+
+def test_resample_redo_keeps_level(tmp_path):
+    """A clipping resample is redone guarded, keeping source level.
+
+    gain -h alone would leave a hot master ~3dB quieter; the trailing
+    gain -rh reclaims exactly the reserved headroom (the pair -G
+    wraps chains in), so peaks land back at full scale, never over.
+    The fixture is peak-normalized in Python: sox synth alone does
+    not reliably hit full scale.
+    """
+    if shutil.which("sox") is None:
+        pytest.skip("sox not found")
+    import array
+    import math
+    import wave
+    from nightcore.backends import run_sox_rate
+    raw = array.array("h")
+    for i in range(44100 * 2):
+        raw.append(int(32767 * math.sin(2 * math.pi * 997 * i / 44100)))
+    peak = max(abs(v) for v in raw)
+    raw = array.array("h", (int(v * 32767 / peak) for v in raw))
+    src = tmp_path / "hot.wav"
+    with wave.open(str(src), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(44100)
+        wav.writeframes(raw.tobytes())
+    out = tmp_path / "out.wav"
+    run_sox_rate(src, out, 48000)
+    probe = subprocess.run(
+        ["sox", str(out), "-n", "stats"],
+        check=True, capture_output=True, text=True,
+    ).stderr
+    match = re.search(r"(?m)^Pk lev dB\s+(.+)$", probe)
+    assert match is not None
+    out_peak = max(float(t) for t in re.findall(r"-?\d+(?:\.\d+)?",
+                                                match.group(1)))
+    assert -1.0 <= out_peak <= 0.0

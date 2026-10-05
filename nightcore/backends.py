@@ -62,16 +62,20 @@ def tame_hot_wav(path, make_temp):
 
 
 def run_sox_rate(input_path, output_path, target):
-    """SoX VHQ resample, redoing with headroom if it clips.
+    """SoX VHQ resample, redoing guarded if it clips.
 
     SoX clamps overshoots (even float output) instead of preserving
-    them, so hot masters would flat-top here -- 220k samples clamped
-    in a square-wave torture test. Its own "clipped N samples" warning
-    is the detector: on the first occurrence the resample is redone as
-    gain -h + rate, which reserves headroom. Clean files take the
-    single plain pass (bit-identical to before). Progress passes
-    through live unless -q/--quiet. (Callers announce the stage line;
-    only the headroom redo is announced here.)
+    them, so hot masters would flat-top here. Its own "clipped N
+    samples" warning is the detector: on the first occurrence the
+    resample is redone guarded -- gain -h up front reserves headroom
+    from the measured (inter-sample) peak, gain -rh at the end
+    reclaims exactly that reservation, so the source level survives
+    instead of coming back ~3dB quieter, and nothing flat-tops (the
+    same pair -G would wrap the chain in, spelled out so the stage
+    stays visible). Clean files take the single plain pass
+    (bit-identical to before). Progress passes through live unless
+    -q/--quiet. (Callers announce the stage line; only the guarded
+    redo is announced here.)
     """
     proc = subprocess.Popen(
         ["sox", "-S", str(input_path), str(output_path),
@@ -109,9 +113,10 @@ def run_sox_rate(input_path, output_path, target):
         raise subprocess.CalledProcessError(
             returncode, ["sox", "rate", str(target)])
     if b"clipped " in blob:
-        say("  SoX clipped a hot master: redoing with headroom (gain -h)")
+        say("  SoX clipped a hot master: redoing guarded "
+            "(gain -h ... gain -rh, level kept)")
         run_sox(input_path, output_path, ["gain", "-h", "rate", "-v",
-                                          str(target)])
+                                          str(target), "gain", "-rh"])
     return returncode
 
 

@@ -854,7 +854,6 @@ def run_conversion(args, input_path, out_dir, ctx):
                     run_rubberband(cur, tmp3, pitch_st, rb_job)
                     cur = tmp3
                     cur, _ = tame_hot_wav(cur, temp_wav)
-                    cur = tmp3
                     # Settle the rate afterwards: the explicit target, else
                     # the pitched rate for down-shifts (up-shifts already
                     # sit at it from the pre-scale above).
