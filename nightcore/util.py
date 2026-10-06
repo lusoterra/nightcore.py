@@ -103,5 +103,3 @@ def preview_output(output_path, title, mode, cover, note="", head=""):
     print(f"  title: {title}")
     print(f"  tags: {mode}")
     print(f"  cover: {cover}")
-
-

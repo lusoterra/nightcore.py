@@ -748,5 +748,3 @@ def read_all_tags(input_path):
     own = native_format_tags(input_path)
     return (_clean(own if own is not None else probe["format_tags"]),
             _clean(probe["audio"].get("tags")))
-
-

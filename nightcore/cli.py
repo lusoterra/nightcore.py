@@ -743,5 +743,3 @@ def main():
         rc = run_conversion(args, Path(args.input), None, ctx)
     print_summary(ctx)
     return rc
-
-

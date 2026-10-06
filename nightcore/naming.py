@@ -250,5 +250,3 @@ def claim_output_path(ctx, output_path):
         n += 1
     claimed.add(candidate)
     return candidate
-
-

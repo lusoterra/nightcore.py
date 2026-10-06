@@ -206,5 +206,3 @@ def run_lrc(args, input_path, out_dir, ctx):
         print(f"Error: cannot write {output_path}: {e}", file=sys.stderr)
         return 1
     return 0
-
-

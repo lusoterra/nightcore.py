@@ -357,5 +357,3 @@ def run_renametag(args, input_path, out_dir, ctx):
     finally:
         shutil.rmtree(tempdir, ignore_errors=True)
     return 0
-
-

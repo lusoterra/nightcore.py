@@ -326,5 +326,3 @@ def extract_cover_tmp(input_path, orig_cover, tempdir):
         return cover_tmp
     except (subprocess.CalledProcessError, OSError):
         return None
-
-

@@ -409,5 +409,3 @@ def predict_audio_stem(args, ctx, audio_path):
             denightcore=naming["denightcore_bare"])
         return sanitize_filename(custom)
     return sanitize_filename(name_base + suffix)
-
-

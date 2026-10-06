@@ -193,5 +193,3 @@ COVER_ART_NAMES = {"cover", "folder", "front", "albumart", "artwork"}
 
 
 COVER_ART_EXTS = {".jpg", ".jpeg", ".png"}
-
-

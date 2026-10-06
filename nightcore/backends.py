@@ -699,5 +699,3 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
             if str(key).lower() == "compilation" and value:
                 mp3_postprocess(output_path, value)
                 break
-
-
