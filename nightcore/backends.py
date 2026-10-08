@@ -1,5 +1,7 @@
 """External encoders: sox, rubberband, ffmpeg, lame, opusenc, qaac, metaflac."""
 
+import os
+import platform
 import re
 import shutil
 import subprocess
@@ -149,10 +151,13 @@ _tool_versions = {}
 
 _VERSION_FLAGS = {
     "ffmpeg": "-version",
+    "ffprobe": "-version",
     "sox": "--version",
     "rubberband": "--version",
     "lame": "--version",
     "opusenc": "--version",
+    "opusinfo": "-h",
+    "vorbiscomment": "--version",
     "metaflac": "--version",
     "qaac": "--version",
 }
@@ -699,3 +704,329 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
             if str(key).lower() == "compilation" and value:
                 mp3_postprocess(output_path, value)
                 break
+
+
+def _bundled_dirs():
+    """Extra dirs where Windows builds carry their tools.
+
+    The setup/portable tree keeps exes in <install>/tools (on PATH via
+    the launcher), the PyInstaller bundle in <_MEIPASS>/tools (on PATH
+    via its runtime hook). Both are normally covered by shutil.which
+    already; these are belt-and-braces so --check still finds them if
+    the PATH patch ever misses. Nonexistent entries are dropped.
+    Never raises.
+    """
+    dirs = []
+    try:
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            dirs.append(os.path.join(meipass, "tools"))
+    except Exception:
+        pass
+    try:
+        exe = sys.executable
+        if exe:
+            exedir = os.path.dirname(os.path.abspath(exe))
+            # Bundle exe dir / setup install root.
+            dirs.append(os.path.join(exedir, "tools"))
+            dirs.append(exedir)
+            # Portable/embedded python: <root>/python/python.exe,
+            # tools at <root>/tools.
+            dirs.append(os.path.join(
+                os.path.dirname(exedir), "tools"))
+    except Exception:
+        pass
+    seen = []
+    for d in dirs:
+        try:
+            if d and d not in seen and os.path.isdir(d):
+                seen.append(d)
+        except Exception:
+            pass
+    return seen
+
+
+def _ensure_bundled_on_path():
+    """Prepend existing bundled tool dirs to PATH for this process.
+
+    Makes version probes below see the Windows payload even when the
+    launcher hook did not run (Linux: no-op, the dirs don't exist).
+    Returns the dirs added. Never raises.
+    """
+    added = []
+    try:
+        current = os.environ.get("PATH", "")
+        parts = current.split(os.pathsep) if current else []
+        for d in _bundled_dirs():
+            if d not in parts:
+                parts.insert(0, d)
+                added.append(d)
+        os.environ["PATH"] = os.pathsep.join(parts)
+    except Exception:
+        pass
+    return added
+
+
+def _which(name):
+    """Absolute path of an external tool, or None.
+
+    PATH first, then the Windows bundled-tool dirs (with and without
+    .exe). Wrapper around shutil.which so tests can stub presence.
+    Never raises.
+    """
+    try:
+        found = shutil.which(name)
+    except Exception:
+        found = None
+    if found:
+        return found
+    for d in _bundled_dirs():
+        for cand in (name, name + ".exe"):
+            try:
+                p = os.path.join(d, cand)
+            except Exception:
+                continue
+            try:
+                if os.path.isfile(p):
+                    return p
+            except Exception:
+                pass
+    return None
+
+
+def _mutagen_version():
+    """Installed mutagen version string, or None when missing."""
+    try:
+        import mutagen
+        ver = getattr(mutagen, "version_string", None)
+        if ver:
+            return str(ver[0] if isinstance(ver, tuple) else ver)
+        ver = getattr(mutagen, "version", None)
+        if ver:
+            return str(ver[0] if isinstance(ver, tuple) else ver)
+    except Exception:
+        pass
+    try:
+        from importlib.metadata import version as _dist_version
+        return _dist_version("mutagen")
+    except Exception:
+        return None
+
+
+def _install_hint(name):
+    """Where to get a missing tool, tailored to the running platform."""
+    win = sys.platform == "win32"
+    hints = {
+        "ffmpeg": ("bundled in tools\\: repair/reinstall the setup, "
+                   "or drop ffmpeg.exe next to tools\\"
+                   if win else
+                   "install FFmpeg (provides ffmpeg + ffprobe)"),
+        "ffprobe": ("bundled in tools\\: repair/reinstall the setup, "
+                    "or drop ffprobe.exe next to tools\\"
+                    if win else
+                    "install FFmpeg (provides ffmpeg + ffprobe)"),
+        "sox": ("bundled in tools\\: repair/reinstall the setup, "
+                "or drop sox.exe next to tools\\"
+                if win else
+                "install SoX (apt/pacman/brew install sox)"),
+        "rubberband": ("bundled in tools\\: repair/reinstall the setup, "
+                       "or drop rubberband.exe next to tools\\"
+                       if win else
+                       "install rubberband "
+                       "(apt/pacman/brew install rubberband)"),
+        "metaflac": ("bundled in tools\\: repair/reinstall the setup, "
+                     "or drop metaflac.exe next to tools\\"
+                     if win else
+                     "install flac (provides metaflac)"),
+        "lame": ("bundled in tools\\ (MP3 falls back to ffmpeg "
+                 "libmp3lame without it)"
+                 if win else
+                 "install lame (or rely on ffmpeg libmp3lame)"),
+        "opusenc": ("bundled in tools\\ (Opus falls back to ffmpeg "
+                    "libopus without it)"
+                    if win else
+                    "install opus-tools (or rely on ffmpeg libopus)"),
+        "opusinfo": ("bundled in tools\\ (Opus tag reads fall back "
+                     "to ffprobe without it)"
+                     if win else
+                     "install opus-tools (provides opusenc + opusinfo)"),
+        "vorbiscomment": ("not bundled: Ogg tag reads fall back to "
+                          "ffprobe without it"
+                          if win else
+                          "install vorbis-tools "
+                          "(provides vorbiscomment)"),
+        "qaac": ("personal builds only: rebuild with --with-qaac, or "
+                 "drop qaac.exe + YOUR Apple DLLs (CoreAudioToolbox.dll, "
+                 "CoreFoundation.dll, icudt*.dll, libdispatch.dll, "
+                 "libicuin*.dll, libicuuc*.dll, objc.dll) into tools\\ "
+                 "and re-run --check (ALAC/AAC fall back to ffmpeg "
+                 "without it)"
+                 if win else
+                 "install qaac (qaac-wine on Arch) for best ALAC/AAC "
+                 "(else ffmpeg fallback)"),
+        "mutagen": ("bundled with the app: reinstall/repair the setup"
+                    if win else
+                    "pip install mutagen"),
+    }
+    return hints.get(name, "install it")
+
+
+# Tools that must be present for full functionality (exit status).
+_CHECK_REQUIRED = ("ffmpeg", "ffprobe", "sox", "rubberband",
+                   "metaflac", "mutagen")
+# Preferred-but-optional native encoders (ffmpeg fallbacks exist).
+_CHECK_OPTIONAL_CLI = ("lame", "opusenc", "qaac")
+# Exact tag readers (callers fall back to ffprobe without them).
+_CHECK_TAG_READERS = ("opusinfo", "vorbiscomment")
+# ffmpeg-bundled encoders probed for the readiness footer.
+_CHECK_FFMPEG_ENCODERS = ("libmp3lame", "libopus", "aac", "alac",
+                          "flac")
+
+
+def run_check():
+    """Print the dependency report (--check) and return an exit code.
+
+    Same code and output on Linux and the Windows setup/bundle builds:
+    every external tool plus the python mutagen library, each as
+    `name: ok <version> (<path>)` or `name: MISSING (<hint>)`, then
+    per-format encode readiness and a one-line verdict. Exit 0 when
+    all required tools are present, 1 otherwise (optional tools never
+    fail the run). Never raises.
+    """
+    from . import __version__
+    _ensure_bundled_on_path()
+    plat = f"{sys.platform} {platform.machine()}".strip()
+    py_ver = platform.python_version()
+    print(f"nightcore {__version__} --check "
+          f"({plat}, python {py_ver})")
+
+    missing_required = []
+    ready_cli = {}
+    ffmpeg_present = _which("ffmpeg") is not None
+
+    def _report_simple(name, required):
+        path = _which(name)
+        if path is None:
+            print(f"{name}: MISSING ({_install_hint(name)})")
+            if required:
+                missing_required.append(name)
+            return None
+        ver = tool_version(name)
+        print(f"{name}: ok {ver} ({path})")
+        return path
+
+    # Python runtime itself.
+    if sys.version_info < (3, 10):
+        print(f"python: BROKEN {py_ver} (needs >= 3.10)")
+        missing_required.append("python")
+    else:
+        print(f"python: ok {py_ver}")
+
+    # Python library (no exe path to show).
+    mver = _mutagen_version()
+    if mver is None:
+        print(f"mutagen: MISSING ({_install_hint('mutagen')})")
+        missing_required.append("mutagen")
+    else:
+        print(f"mutagen: ok {mver}")
+
+    for name in ("ffmpeg", "ffprobe", "sox", "rubberband",
+                 "metaflac"):
+        _report_simple(name, required=True)
+
+    for name in _CHECK_OPTIONAL_CLI:
+        if name == "qaac":
+            continue
+        verifier = find_lame if name == "lame" else find_opusenc
+        try:
+            ok = bool(verifier())
+        except Exception:
+            ok = False
+        path = _which(name)
+        ready_cli[name] = ok
+        if ok:
+            print(f"{name}: ok {tool_version(name)} ({path})")
+        elif path is not None:
+            print(f"{name}: BROKEN (found at {path} but failed "
+                  f"verification; {_install_hint(name)})")
+        else:
+            print(f"{name}: MISSING ({_install_hint(name)}) "
+                  f"(optional)")
+
+    # qaac: a present-but-unusable binary (missing Apple DLLs) is the
+    # common Windows case, so distinguish it from truly absent.
+    qpath = _which("qaac")
+    try:
+        qline = find_qaac()
+    except Exception:
+        qline = None
+    ready_cli["qaac"] = bool(qline)
+    if qline:
+        try:
+            toolbox = coreaudio_toolbox_version()
+        except Exception:
+            toolbox = None
+        extra = (f"; CoreAudioToolbox {toolbox}"
+                 if toolbox else "")
+        print(f"qaac: ok {tool_version('qaac')} ({qpath}{extra})")
+    elif qpath is not None:
+        print(f"qaac: BROKEN (found at {qpath} but 'qaac --check' "
+              f"failed: missing Apple DLLs? {_install_hint('qaac')}) "
+              f"(optional)")
+    else:
+        print(f"qaac: MISSING ({_install_hint('qaac')}) (optional)")
+
+    for name in _CHECK_TAG_READERS:
+        path = _which(name)
+        if path is None:
+            print(f"{name}: MISSING ({_install_hint(name)}) "
+                  f"(optional)")
+        else:
+            print(f"{name}: ok {tool_version(name)} ({path}) "
+                  f"(optional)")
+
+    # ffmpeg-bundled encoders (informational; unknown without ffmpeg).
+    enc_have = {}
+    for enc in _CHECK_FFMPEG_ENCODERS:
+        if not ffmpeg_present:
+            print(f"ffmpeg {enc}: unknown (no ffmpeg)")
+            enc_have[enc] = False
+            continue
+        try:
+            have = bool(ffmpeg_has_encoder(enc))
+        except Exception:
+            have = False
+        enc_have[enc] = have
+        print(f"ffmpeg {enc}: {'yes' if have else 'no'}")
+
+    def _ready_line(fmt, via_cli, via_cli_name, via_ff, ff_name):
+        if via_cli and via_ff:
+            return (f"{fmt} encode: ready via {via_cli_name} "
+                    f"(ffmpeg {ff_name} fallback ok)")
+        if via_cli:
+            return f"{fmt} encode: ready via {via_cli_name}"
+        if via_ff:
+            return f"{fmt} encode: ready via ffmpeg {ff_name}"
+        return (f"{fmt} encode: UNAVAILABLE (no {via_cli_name} and "
+                f"no ffmpeg {ff_name})")
+
+    print(_ready_line("mp3", ready_cli.get("lame"),
+                      "lame", enc_have.get("libmp3lame"),
+                      "libmp3lame"))
+    print(_ready_line("opus", ready_cli.get("opusenc"),
+                      "opusenc", enc_have.get("libopus"),
+                      "libopus"))
+    print(_ready_line("aac", ready_cli.get("qaac"),
+                      "qaac", enc_have.get("aac"), "aac"))
+    print(_ready_line("alac", ready_cli.get("qaac"),
+                      "qaac", enc_have.get("alac"), "alac"))
+    print(f"flac encode: "
+          f"{'ready via ffmpeg flac' if enc_have.get('flac')
+              else 'UNAVAILABLE (no ffmpeg flac)'}")
+
+    if missing_required:
+        print(f"check: MISSING required tools: "
+              f"{', '.join(missing_required)}")
+        return 1
+    print("check: all required tools present")
+    return 0

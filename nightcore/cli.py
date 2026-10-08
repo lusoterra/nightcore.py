@@ -10,7 +10,7 @@ import sys
 
 from . import __version__, util
 from .audio import speed_from_semitones
-from .backends import detect_lossy_dialect, select_lossy_backend
+from .backends import detect_lossy_dialect, run_check, select_lossy_backend
 from .constants import AUDIO_EXTS, COVER_ART_EXTS, COVER_ART_NAMES, LOSS_DEFAULTS, OUTPUT_FORMATS, _IMAGE_MIME
 from .convert import run_conversion
 from .naming import batch_op_dir
@@ -252,6 +252,14 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        "--check",
+        action="store_true",
+        default=False,
+        help="Check external tools (ffmpeg, sox, rubberband, encoders,\n"
+             "tag readers, python libs), print versions/paths and exit"
+    )
+
+    parser.add_argument(
         "--pitch-diff",
         type=float,
         nargs="+",
@@ -406,6 +414,9 @@ def main():
     signal.signal(signal.SIGINT, _on_sigint)
     args = parse_arguments()
     util._quiet = args.quiet
+
+    if args.check:
+        return run_check()
 
     if args.pitch_diff is not None:
         vals = args.pitch_diff

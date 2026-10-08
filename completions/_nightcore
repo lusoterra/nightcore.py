@@ -39,6 +39,7 @@ _nightcore() {
         '--tag-template+[Tag template file]:template:_files' \
         '--cover+[Cover artwork PNG/JPG]:image:_files -g "*.png *.jpg *.jpeg (#i)"' \
         '--version[Print version and exit]' \
+        '--check[Check external tools and exit]' \
         '-y[Overwrite output file if it exists]' \
         '--overwrite[Overwrite output file if it exists]' \
         '-q[Suppress tool output and progress lines]' \

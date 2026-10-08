@@ -185,6 +185,16 @@ PNG/JPG artwork to use as the sole attached picture of outputs
 .B --version
 Print version and exit.
 .TP
+.B --check
+Check every external tool (ffmpeg/ffprobe, SoX, rubberband, lame,
+opusenc, qaac, metaflac, opusinfo, vorbiscomment), the ffmpeg-bundled
+encoders and the python mutagen library; print one
+\fIok <version> (<path>)\fR or \fIMISSING (<hint>)\fR line per tool,
+per-format encode readiness, and a verdict. Exits 0 when all required
+tools are present, 1 otherwise (preferred-but-optional encoders and
+tag readers never fail the run). Same output on Linux and the Windows
+builds (which carry their tools in \fItools\\\fR next to the exe).
+.TP
 .B --lossy-opts \fIOPTS\fR
 Encoder quality flags (shlex-split, equals form only). Defaults: V0
 (mp3), 128k (opus), TVBR 91 (qaac); ffmpeg AAC has none and fails loudly
@@ -309,6 +319,8 @@ worse). \fBlame\fR is the preferred MP3 encoder (libmp3lame fallback);
 (from the flac package) forces Cover (front) picture types and
 exact COMMENT/DESCRIPTION/ENCODER tags on FLAC outputs; a run needing
 those fixes refuses to proceed without it (install flac).
+Run \fBnightcore --check\fR to verify every tool, encoder and tag
+reader at once (same report on Linux and the Windows builds).
 .SH SEE ALSO
 .BR ffmpeg (1),
 .BR sox (1),

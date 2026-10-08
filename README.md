@@ -43,6 +43,10 @@ Have all of these installed for the smoothest experience:
 - lame (preferred MP3 encoder; FFmpeg libmp3lame fallback)
 - qaac/qaac-wine (optional, for ALAC/AAC, FFmpeg fallback)
 
+Run `nightcore --check` to verify every tool, encoder and tag reader at
+once (same report on Linux and the Windows builds, which carry their
+tools in `tools\` next to the exe).
+
 ## Figuring out semitone differences for pitched up nightcore
 
 Measure the spectral peak of the original track and of the pitched track
