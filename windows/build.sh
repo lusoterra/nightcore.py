@@ -36,8 +36,18 @@ UPSTREAM_REPO="https://git.lusosterone.net/lev/nightcore.py"
 
 # derived locations/specs — override the _URL vars in versions.env
 # (or the environment) to point at mirrors.
+# Windows target is fixed x86_64 (amd64 artifacts, x86_64 dist names).
 WINE_PY_TAG="$(printf '%s' "$WINE_PY_VER" | awk -F. '{print $1$2}')"
 WINE_PY_URL="https://www.python.org/ftp/python/${WINE_PY_VER}/python-${WINE_PY_VER}-amd64.exe"
+# NSIS .debs run on THIS (Linux host) machine, not the Windows target.
+NSIS_HOST_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
+if [ -z "$NSIS_HOST_ARCH" ]; then
+    case "$(uname -m)" in
+        x86_64) NSIS_HOST_ARCH="amd64";;
+        aarch64|arm64) NSIS_HOST_ARCH="arm64";;
+        *) echo "unsupported host arch: $(uname -m)" >&2; exit 2;;
+    esac
+fi
 SOX_URL="${SOX_URL:-https://sourceforge.net/projects/sox/files/sox/${SOX_VER}/sox-${SOX_VER}-win32.zip/download}"
 RUBBERBAND_URL="${RUBBERBAND_URL:-https://breakfastquay.com/files/releases/rubberband-${RUBBERBAND_VER}-gpl-executable-windows.zip}"
 LAME_URL="${LAME_URL:-https://www.rarewares.org/files/mp3/lame${LAME_VER}-x64.zip}"
@@ -240,7 +250,7 @@ build_setup_one() { # build_setup_one MODE (default|qaac|full)
         echo "== fetch makensis =="
         mkdir -p "$NSIS/a" "$NSIS/b"
         curl -fL --retry 3 -o "$NSIS/nsis.deb" \
-            "https://ftp.debian.org/debian/pool/main/n/nsis/nsis_${NSIS_VER}_amd64.deb"
+            "https://ftp.debian.org/debian/pool/main/n/nsis/nsis_${NSIS_VER}_${NSIS_HOST_ARCH}.deb"
         curl -fL --retry 3 -o "$NSIS/nsis-common.deb" \
             "https://ftp.debian.org/debian/pool/main/n/nsis/nsis-common_${NSIS_VER}_all.deb"
         bsdtar -xf "$NSIS/nsis.deb" -C "$NSIS/a"
@@ -276,7 +286,7 @@ build_setup_one() { # build_setup_one MODE (default|qaac|full)
     mkdir -p build dist
     sed -e "s|@VER@|$VER|g" -e "s|@ROOT@|$ROOT|g" -e "s|@TAG@|$tag|g" \
         -e "s|@PAYLOAD@|$(basename "$payload")|g" \
-        -e "s|@OUT@|nightcore-$VER-win64-setup$tag.exe|g" \
+        -e "s|@OUT@|nightcore-$VER-x86_64-setup$tag.exe|g" \
         installer-setup.nsi > build/"installer-setup$tag.nsi"
 
     echo "== makensis (user+mount namespace) =="
@@ -288,7 +298,7 @@ build_setup_one() { # build_setup_one MODE (default|qaac|full)
         mount --bind "$0" /usr/share/nsis &&
         exec "$1" -V2 "$2"' "$STUBS" "$MAKENSIS" "build/installer-setup$tag.nsi"
     ls -la dist/
-    file "dist/nightcore-$VER-win64-setup$tag.exe"
+    file "dist/nightcore-$VER-x86_64-setup$tag.exe"
 }
 
 build_bundle_one() { # build_bundle_one MODE (default|qaac|full)
@@ -320,7 +330,7 @@ build_bundle_one() { # build_bundle_one MODE (default|qaac|full)
     local pyexe=""
     if ! pyexe="$(find_wine_python)"; then
         echo "== install windows python in isolated prefix $WINEPREFIX =="
-        local pysetup="cache/python-amd64.exe"
+        local pysetup="cache/python-${WINE_PY_VER}-amd64.exe"
         mkdir -p cache
         [ -s "$pysetup" ] || curl -fL --retry 3 -o "$pysetup" \
             "$WINE_PY_URL"
@@ -407,16 +417,16 @@ EOF
     timeout 1200 wine "$pyexe" -m PyInstaller --noconfirm --clean \
         --distpath "C:\\build\\dist" --workpath "C:\\build\\work" bundle.spec
     ls -la "$b/dist/"
-    cp -f "$b/dist/nightcore-bundle.exe" "$ROOT/dist/nightcore-$VER-win64-bundle$tag.exe"
+    cp -f "$b/dist/nightcore-bundle.exe" "$ROOT/dist/nightcore-$VER-x86_64-bundle$tag.exe"
     cd "$ROOT"
-    ls -la "dist/nightcore-$VER-win64-bundle$tag.exe"
+    ls -la "dist/nightcore-$VER-x86_64-bundle$tag.exe"
     echo "wine prefix left at $WINEPREFIX — delete it yourself:" >&2
     echo "  rm -rf \"$WINEPREFIX\"" >&2
 }
 
 # ---- main ----
 resolve_upstream
-echo "versions: nightcore=${NIGHTCORE_VERSION:-latest} py=$PY_VER wine-py=$WINE_PY_VER"
+echo "versions: arch=x86_64 nightcore=${NIGHTCORE_VERSION:-latest} py=$PY_VER wine-py=$WINE_PY_VER"
 echo "versions: sox=$SOX_VER rubberband=$RUBBERBAND_VER lame=$LAME_VER opus=$OPUS_VER libopus=$LIBOPUS_VER"
 echo "versions: flac=$FLAC_VER vorbis=$VORBIS_VER mutagen=${MUTAGEN_VER:-latest} pyinstaller=${PYINSTALLER_VER:-latest} nsis=$NSIS_VER"
 if [ "$NO_DOWNLOAD" -eq 0 ]; then

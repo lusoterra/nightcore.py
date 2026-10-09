@@ -53,4 +53,6 @@ SOX_VER=14.4.3 ./build.sh --fetch-only              # one-off bump, no file edit
 ```
 
 The effective pins print at the start of every run (`versions: ...`).
+Windows target is fixed x86_64: outputs are named
+`nightcore-<ver>-x86_64-setup...` / `nightcore-<ver>-x86_64-bundle...`.
 `NIGHTCORE_SRC` (a local path) still overrides `NIGHTCORE_VERSION` when set.
