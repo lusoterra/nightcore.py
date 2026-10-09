@@ -1,3 +1,9 @@
+windows/tools/
+windows/build/
+windows/dist/
+windows/cache/
+windows/*.spec.bak
+
 __pycache__/
 .pytest_cache/
 dist/
