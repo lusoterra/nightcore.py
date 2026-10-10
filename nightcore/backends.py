@@ -146,6 +146,20 @@ def _verified_cli(binary, check_args, marker, timeout=60):
 
 _qaac_version = None
 
+# Raw `qaac --check` probe result (CompletedProcess, or None when the
+# spawn itself failed). Stashed by find_qaac so reporters can inspect
+# the exit code without re-spawning (wine startup isn't free).
+_qaac_check_result = None
+
+# Apple DLLs shipped by the full Windows setup/bundle for qaac
+# (exact names from windows/build.sh APPLE).
+_APPLE_DLLS = ("ASL.dll", "CoreAudioToolbox.dll", "CoreFoundation.dll",
+               "icudt62.dll", "libdispatch.dll", "libicuin.dll",
+               "libicuuc.dll", "objc.dll")
+
+# Windows failed-to-start exit for a missing DLL in the load chain.
+_DLL_NOT_FOUND = 0xC0000135
+
 
 _tool_versions = {}
 
@@ -227,12 +241,13 @@ def find_qaac():
     markers, so unrelated same-named executables don't qualify. Result is
     cached for the run (wine startup isn't free).
     """
-    global _qaac_version
+    global _qaac_version, _qaac_check_result
     if _qaac_version is False:
         return None
     if _qaac_version is not None:
         return _qaac_version
     _qaac_version = False
+    _qaac_check_result = None
     if shutil.which("qaac") is None:
         return None
     try:
@@ -242,6 +257,7 @@ def find_qaac():
         )
     except (subprocess.SubprocessError, OSError):
         return None
+    _qaac_check_result = result
     output = (result.stdout or "") + (result.stderr or "")
     first_line = output.strip().splitlines()[0] if output.strip() else ""
     if result.returncode == 0 and first_line.startswith("qaac ") \
@@ -249,6 +265,49 @@ def find_qaac():
         _qaac_version = first_line
         return _qaac_version
     return None
+
+
+def _apple_dlls_next_to(qaac_path):
+    """Apple DLLs present in qaac.exe's own directory (case-insensitive).
+
+    Empty list when the directory is unreadable. Never raises.
+    """
+    try:
+        qdir = os.path.dirname(os.path.abspath(qaac_path))
+        lowered = {name.lower() for name in os.listdir(qdir)}
+    except Exception:
+        return []
+    return [dll for dll in _APPLE_DLLS if dll.lower() in lowered]
+
+
+def qaac_redist_hint():
+    """Visual C++ runtime hint for Windows full setup/bundle builds.
+
+    Returns "" unless qaac.exe is present, its `qaac --check` probe
+    failed, and the Apple DLLs sit next to it anyway: then the load
+    chain is broken at the MSVC runtime level and vc_redist.x64.exe
+    is the likely fix. Wording is definitive when the probe died
+    with STATUS_DLL_NOT_FOUND, hedged otherwise (no extra spawn:
+    find_qaac's cached probe result is reused). Never raises.
+    """
+    try:
+        if sys.platform != "win32":
+            return ""
+        qpath = _which("qaac")
+        if qpath is None or find_qaac() is not None:
+            return ""
+        if "CoreAudioToolbox.dll" not in _apple_dlls_next_to(qpath):
+            return ""
+        rc = getattr(_qaac_check_result, "returncode", None)
+        if isinstance(rc, int) and (rc & 0xFFFFFFFF) == _DLL_NOT_FOUND:
+            return ("Apple DLLs are installed but qaac cannot start "
+                    "(missing system DLL): install vc_redist.x64.exe "
+                    "(Visual C++ runtime) and re-run --check")
+        return ("Apple DLLs are installed but 'qaac --check' still "
+                "fails: you may need vc_redist.x64.exe "
+                "(Visual C++ runtime)")
+    except Exception:
+        return ""
 
 
 def find_lame():
@@ -368,8 +427,12 @@ def select_lossy_backend(fmt, dialect):
             return {"kind": "qaac"}
         if ffmpeg_has_encoder("aac"):
             if dialect is None:
-                print("Warning: qaac not found, AAC via ffmpeg sounds worse "
-                      "(use qaac for quality)", file=sys.stderr)
+                redist = qaac_redist_hint()
+                detail = (f"qaac is installed but unusable ({redist})"
+                          if redist else
+                          "qaac not found (use qaac for quality)")
+                print(f"Warning: {detail}, AAC via ffmpeg sounds worse",
+                      file=sys.stderr)
             else:
                 say(f"Encoding AAC with ffmpeg{forced}")
             return {"kind": "ffmpeg"}
@@ -970,8 +1033,11 @@ def run_check():
                  if toolbox else "")
         print(f"qaac: ok {tool_version('qaac')} ({qpath}{extra})")
     elif qpath is not None:
+        redist = qaac_redist_hint()
+        reason = redist if redist else \
+            f"missing Apple DLLs? {_install_hint('qaac')}"
         print(f"qaac: BROKEN (found at {qpath} but 'qaac --check' "
-              f"failed: missing Apple DLLs? {_install_hint('qaac')}) "
+              f"failed: {reason}) "
               f"(optional)")
     else:
         print(f"qaac: MISSING ({_install_hint('qaac')}) (optional)")

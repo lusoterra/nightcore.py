@@ -88,7 +88,87 @@ def test_check_qaac_broken_reports_dll_hint(monkeypatch, capsys):
     assert backends.run_check() == 0
     out = capsys.readouterr().out
     assert "qaac: BROKEN (found at /usr/bin/qaac" in out
+    assert "missing Apple DLLs?" in out
+    assert "vc_redist" not in out
     assert "aac encode: ready via ffmpeg aac" in out
+
+
+def _stub_redist_env(monkeypatch, probe):
+    """Windows full-setup shape: qaac broken, Apple DLLs alongside."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(backends, "_which",
+                        lambda name: "C:\\tools\\qaac.exe"
+                        if name == "qaac" else None)
+    monkeypatch.setattr(backends, "find_qaac", lambda: None)
+    monkeypatch.setattr(backends, "_apple_dlls_next_to",
+                        lambda path: list(backends._APPLE_DLLS))
+    monkeypatch.setattr(backends, "_qaac_check_result", probe)
+
+
+def test_qaac_redist_hint_hedged_without_probe(monkeypatch):
+    _stub_redist_env(monkeypatch, None)
+    hint = backends.qaac_redist_hint()
+    assert "may need vc_redist.x64.exe" in hint
+
+
+def test_qaac_redist_hint_definitive_on_dll_not_found(monkeypatch):
+    import subprocess
+    _stub_redist_env(monkeypatch, subprocess.CompletedProcess(
+        ["qaac", "--check"], -1073741515, "", ""))
+    hint = backends.qaac_redist_hint()
+    assert "cannot start" in hint
+    assert "vc_redist.x64.exe" in hint
+
+
+def test_qaac_redist_hint_quiet_off_windows(monkeypatch):
+    # Same broken shape on Linux: no redist advice.
+    _stub_redist_env(monkeypatch, None)
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert backends.qaac_redist_hint() == ""
+
+
+def test_qaac_redist_hint_quiet_without_dlls(monkeypatch):
+    _stub_redist_env(monkeypatch, None)
+    monkeypatch.setattr(backends, "_apple_dlls_next_to",
+                        lambda path: [])
+    assert backends.qaac_redist_hint() == ""
+
+
+def test_check_qaac_broken_with_dlls_hints_redist(monkeypatch, capsys):
+    # Full setup/bundle: DLLs installed but the check still fails.
+    _stub_env(monkeypatch, broken=("qaac",))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(backends, "_apple_dlls_next_to",
+                        lambda path: list(backends._APPLE_DLLS))
+    monkeypatch.setattr(backends, "_qaac_check_result", None)
+    assert backends.run_check() == 0
+    out = capsys.readouterr().out
+    assert "qaac: BROKEN (found at /usr/bin/qaac" in out
+    assert "vc_redist.x64.exe" in out
+    assert "missing Apple DLLs?" not in out
+
+
+def test_apple_dlls_next_to_lists_present(tmp_path):
+    (tmp_path / "qaac.exe").write_bytes(b"x")
+    (tmp_path / "CoreAudioToolbox.dll").write_bytes(b"x")
+    (tmp_path / "ASL.DLL").write_bytes(b"x")
+    (tmp_path / "other.dll").write_bytes(b"x")
+    found = backends._apple_dlls_next_to(str(tmp_path / "qaac.exe"))
+    assert found == ["ASL.dll", "CoreAudioToolbox.dll"]
+
+
+def test_find_qaac_stashes_probe_result(monkeypatch):
+    import subprocess
+    probe = subprocess.CompletedProcess(["qaac", "--check"], 1,
+                                        "", "DLL load failed")
+    monkeypatch.setattr(backends, "_qaac_version", None)
+    monkeypatch.setattr(backends, "_qaac_check_result", None)
+    monkeypatch.setattr(backends.shutil, "which",
+                        lambda name: "C:\\tools\\qaac.exe")
+    monkeypatch.setattr(backends.subprocess, "run",
+                        lambda *a, **k: probe)
+    assert backends.find_qaac() is None
+    assert backends._qaac_check_result is probe
 
 
 def test_check_no_ffmpeg(monkeypatch, capsys):

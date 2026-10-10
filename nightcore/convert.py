@@ -9,7 +9,7 @@ import sys
 import tempfile
 
 from .audio import cover_codec_name, extract_cover_tmp, format_rate, sample_is_float, semitones_from_speed, speed_from_semitones
-from .backends import coreaudio_toolbox_version, find_qaac, flac_postprocess, missing_metaflac, run_ffmpeg, run_lame, run_opusenc, run_qaac_alac, run_rubberband, run_sox_rate, tame_hot_wav, tool_version
+from .backends import coreaudio_toolbox_version, find_qaac, flac_postprocess, missing_metaflac, qaac_redist_hint, run_ffmpeg, run_lame, run_opusenc, run_qaac_alac, run_rubberband, run_sox_rate, tame_hot_wav, tool_version
 from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, OUTPUT_FORMATS, PIPELINE_TAG, STALE_TAGS, STAMP_TAG, _IMAGE_MIME
 from .lrc import run_lrc
 from .naming import claim_output_path, clean_source_title, single_parent, split_shift_tags, strip_denightcore_tags, strip_empty_display_tags, strip_quality_rate_tags
@@ -426,7 +426,11 @@ def run_conversion(args, input_path, out_dir, ctx):
             if use_qaac:
                 say(f"Encoding ALAC with {qaac_version}")
             else:
-                say("Note: qaac not found, encoding ALAC with ffmpeg")
+                redist = qaac_redist_hint()
+                detail = (f"qaac is installed but unusable ({redist})"
+                          if redist else
+                          "qaac not found")
+                say(f"Note: {detail}, encoding ALAC with ffmpeg")
         no_delete = args.no_delete_tags
         # Template strip mode drops every unlisted tag; --no-delete-tags
         # maps source tags first so the template only overrides.

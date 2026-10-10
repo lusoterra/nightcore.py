@@ -38,8 +38,12 @@ UPSTREAM_REPO="https://git.lusosterone.net/lev/nightcore.py"
 # derived locations/specs — override the _URL vars in versions.env
 # (or the environment) to point at mirrors.
 # Windows target is fixed x86_64 (amd64 artifacts, x86_64 dist names).
-WINE_PY_TAG="$(printf '%s' "$WINE_PY_VER" | awk -F. '{print $1$2}')"
-WINE_PY_URL="https://www.python.org/ftp/python/${WINE_PY_VER}/python-${WINE_PY_VER}-amd64.exe"
+# Both embed zips (portable tree + Wine build env) are headless-safe;
+# the Burn installer .exe is deliberately not used (it fails with
+# "Failed to create window", exit 0x582, when no display server runs).
+PY_EMBED_URL="https://www.python.org/ftp/python/${PY_VER}/python-${PY_VER}-embed-amd64.zip"
+WINE_PY_EMBED_URL="https://www.python.org/ftp/python/${WINE_PY_VER}/python-${WINE_PY_VER}-embed-amd64.zip"
+GETPIP_URL="${GETPIP_URL:-https://bootstrap.pypa.io/get-pip.py}"
 # NSIS .debs run on THIS (Linux host) machine, not the Windows target.
 NSIS_HOST_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
 if [ -z "$NSIS_HOST_ARCH" ]; then
@@ -185,8 +189,16 @@ check_size() { # check_size FILE (100MB Cloudflare/Gitea cap)
 
 fetch_tools() {
     echo "== fetch =="
-    dl "https://www.python.org/ftp/python/$PY_VER/python-$PY_VER-embed-amd64.zip" \
-        "$CACHE/python-embed.zip"
+    # versioned names: an unversioned python-embed.zip goes stale on bump
+    # (dl skips present files, so the portable tree kept the old python).
+    dl "$PY_EMBED_URL" \
+        "$CACHE/python-embed-$PY_VER.zip"
+    if [ "$WINE_PY_VER" != "$PY_VER" ]; then
+        dl "$WINE_PY_EMBED_URL" \
+            "$CACHE/python-embed-$WINE_PY_VER.zip"
+    fi
+    dl "$GETPIP_URL" \
+        "$CACHE/get-pip.py" || echo "!! get-pip fetch failed (bundle needs it)"
     dl "$FFMPEG_URL" \
         "$CACHE/ffmpeg.zip" || echo "!! ffmpeg fetch failed (drop ffmpeg.exe/ffprobe.exe in $STAGE/)"
     dl "$SOX_URL" \
@@ -236,8 +248,8 @@ assemble_portable() {
     mkdir -p "$PORTABLE/python" "$PORTABLE/app" "$PORTABLE/tools"
 
     # 1. windows python embed
-    if [ -s "$CACHE/python-embed.zip" ]; then
-        unzip -q -o "$CACHE/python-embed.zip" -d "$PORTABLE/python"
+    if [ -s "$CACHE/python-embed-$PY_VER.zip" ]; then
+        unzip -q -o "$CACHE/python-embed-$PY_VER.zip" -d "$PORTABLE/python"
         # allow site + our app dir: _pth name varies (python314._pth)
         PTH="$(ls "$PORTABLE/python"/python*._pth | head -n 1)"
         { echo "../app"; echo "./Lib/site-packages"; grep -v "^#" "$PTH" | grep -v "^\.\./app" || true; echo "import site"; } | awk '!seen[$0]++' > "$PTH.new"; mv "$PTH.new" "$PTH"
@@ -246,7 +258,7 @@ assemble_portable() {
         if [ -n "$WHEEL" ]; then unzip -q -o "$WHEEL" -d "$PORTABLE/python/Lib/site-packages"; echo "mutagen from $(basename "$WHEEL")"
         else echo "!! no mutagen wheel in $CACHE (m4a/mp3 postprocess will warn)" >&2; fi
     else
-        echo "!! $CACHE/python-embed.zip missing (need network once)" >&2; exit 1
+        echo "!! $CACHE/python-embed-$PY_VER.zip missing (need network once)" >&2; exit 1
     fi
 
     # 2. nightcore source (no __pycache__: Linux .pyc files are useless on Win)
@@ -371,21 +383,30 @@ build_bundle_one() { # build_bundle_one MODE (default|qaac|full)
     echo "cleanup when done: rm -rf \"$WINEPREFIX\""
 
     find_wine_python() {
-        for p in "$WINEPREFIX/drive_c/Python${WINE_PY_TAG}/python.exe" \
-            "$WINEPREFIX/drive_c/users/$USER/AppData/Local/Programs/Python/Python${WINE_PY_TAG}/python.exe"; do
-            [ -x "$p" ] && { echo "$p"; return 0; }
-        done
-        return 1
+        # embed python ships without the exec bit (zip); probe -f, not -x.
+        [ -f "$WINEPREFIX/drive_c/pybuild/python.exe" ] \
+            && echo "$WINEPREFIX/drive_c/pybuild/python.exe" || return 1
     }
     local pyexe=""
     if ! pyexe="$(find_wine_python)"; then
-        echo "== install windows python in isolated prefix $WINEPREFIX =="
-        local pysetup="cache/python-${WINE_PY_VER}-amd64.exe"
-        mkdir -p cache
-        [ -s "$pysetup" ] || curl -fL --retry 3 -o "$pysetup" \
-            "$WINE_PY_URL"
-        timeout 600 wine "$pysetup" /quiet InstallAllUsers=0 PrependPath=0 Include_test=0
-        pyexe="$(find_wine_python)" || { echo "python install failed" >&2; exit 1; }
+        # Headless-safe provisioning: the Burn installer .exe fails with
+        # "Failed to create window" (exit 0x582) when no display server
+        # runs, so stage the embeddable zip + get-pip instead
+        # (console-only). Forward slashes: Wine maps C:/... fine, while
+        # unix paths don't parse as Windows script args.
+        echo "== stage embed python $WINE_PY_VER in isolated prefix $WINEPREFIX =="
+        [ -s "$CACHE/python-embed-$WINE_PY_VER.zip" ] || { echo "!! $CACHE/python-embed-$WINE_PY_VER.zip missing (need network once)" >&2; exit 1; }
+        [ -s "$CACHE/get-pip.py" ] || { echo "!! $CACHE/get-pip.py missing (need network once)" >&2; exit 1; }
+        mkdir -p "$WINEPREFIX/drive_c/pybuild"
+        unzip -q -o "$CACHE/python-embed-$WINE_PY_VER.zip" -d "$WINEPREFIX/drive_c/pybuild"
+        # embed ships with site disabled; pip needs it.
+        # _pth name varies (python314._pth).
+        PTH="$(ls "$WINEPREFIX/drive_c/pybuild"/python*._pth | head -n 1)"
+        { grep -v "^#" "$PTH" || true; echo "import site"; } | awk '!seen[$0]++' > "$PTH.new"; mv "$PTH.new" "$PTH"
+        cp -f "$CACHE/get-pip.py" "$WINEPREFIX/drive_c/pybuild/get-pip.py"
+        pyexe="$WINEPREFIX/drive_c/pybuild/python.exe"
+        timeout 300 wine "$pyexe" "C:/pybuild/get-pip.py"
+        pyexe="$(find_wine_python)" || { echo "python staging failed" >&2; exit 1; }
     fi
     timeout 120 wine "$pyexe" --version
 
@@ -421,6 +442,12 @@ build_bundle_one() { # build_bundle_one MODE (default|qaac|full)
         echo "qaac + Apple DLLs excluded (pass --with-qaac, or --full for personal)"
     fi
 
+    # UPX the two giants with the HOST upx so the bundle stays under
+    # 100MB: PyInstaller runs as a Windows process under Wine, where the
+    # Linux upx binary is not executable, so spec upx= would be a no-op
+    # at best (qaac/Apple DLLs are never packed).
+    pack_exes "$b/tools/ffmpeg.exe" "$b/tools/ffprobe.exe"
+
     echo "== verify staged inputs =="
     ls -la "$b/src" | head -n 20
     ls "$b/tools" | head -n 40
@@ -435,8 +462,7 @@ build_bundle_one() { # build_bundle_one MODE (default|qaac|full)
 
     echo "== write spec (windows paths) =="
     local binlist; binlist="$(ls "$b/tools" | sed 's/.*/\("C:\\\\build\\\\tools\\\\&", "tools"\),/' | tr '\n' ' ')"
-    local use_upx="False"
-    if [ "$NO_UPX" -eq 0 ] && command -v upx >/dev/null 2>&1; then use_upx="True"; fi
+    # upx=False: tools above are already packed with the host upx.
     cat > "$b/bundle.spec" <<EOF
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import copy_metadata
@@ -458,7 +484,7 @@ exe = EXE(
     pyz, a.scripts, a.binaries, a.datas, [],
     name="nightcore-bundle",
     debug=False, bootloader_ignore_signals=False,
-    strip=False, upx=$use_upx, console=True,
+    strip=False, upx=False, console=True,
     disable_windowed_traceback=False, argv_emulation=False,
 )
 EOF
