@@ -7,6 +7,27 @@ import signal
 import subprocess
 import sys
 
+def _enable_windows_vt():
+    """Best-effort: let Windows consoles render ANSI escapes.
+
+    conhost and Windows Terminal understand ANSI only after
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING is set on the console handles.
+    Piped handles fail GetConsoleMode and are skipped. Never raises.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        for handle_id in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+            mode = ctypes.c_ulong()
+            handle = kernel32.GetStdHandle(handle_id)
+            if handle and kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass
+
+
 def _help_formatter(*args, **kwargs):
     kwargs.setdefault("max_help_position", 32)
     return argparse.RawTextHelpFormatter(*args, **kwargs)

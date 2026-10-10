@@ -20,6 +20,7 @@ from .util import _help_formatter, _on_sigint, missing_tools, say
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
+        prog="nightcore",
         description="Change audio speed/pitch using ffmpeg, sox and rubberband",
         formatter_class=_help_formatter
     )
@@ -412,6 +413,7 @@ def sweep_empty_dirs(args, batch_dir, dirs, dry_run):
 
 def main():
     signal.signal(signal.SIGINT, _on_sigint)
+    util._enable_windows_vt()
     args = parse_arguments()
     util._quiet = args.quiet
 
