@@ -1,5 +1,7 @@
 # nightcore.py
 
+> Windows users: install [vc_redist.x64.exe](https://download.visualstudio.microsoft.com/download/pr/bd1c8d9d-ba95-4eee-bc6e-df1fcc876373/CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe) if qaac fails to check CoreAudioToolbox.
+
 This is a ~~simple~~ wrapper that creates bit-perfect Nightcore by altering the
 audio to change speed/pitch file using FFmpeg, SoX and rubberband.
 
