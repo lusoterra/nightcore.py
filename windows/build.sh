@@ -13,6 +13,7 @@
 #   ./build.sh --skip-setup | --skip-bundle         # only one installer type
 #   ./build.sh --portable-only                      # stop after build/portable
 #   ./build.sh --with-qaac | --full | --build-all   # qaac variants (setup + bundle)
+#   ./build.sh --no-upx                             # skip UPX packing (exes may exceed 100MB)
 #
 # Qaac modes (apply to setup + bundle):
 #   (default)   no qaac / Apple DLLs, even if staged   (-setup.exe / -bundle.exe)
@@ -65,13 +66,14 @@ if [ -n "$PYINSTALLER_VER" ]; then PYINSTALLER_SPEC="pyinstaller==$PYINSTALLER_V
 mkdir -p "$STAGE" "$CACHE" build dist
 
 FETCH_ONLY=0; NO_DOWNLOAD=0; SKIP_SETUP=0; SKIP_BUNDLE=0; PORTABLE_ONLY=0
-WITH_QAAC=0; FULL=0; BUILD_ALL=0
+WITH_QAAC=0; FULL=0; BUILD_ALL=0; NO_UPX=0
 for a in "$@"; do case "$a" in
     --fetch-only) FETCH_ONLY=1;;
     --no-download) NO_DOWNLOAD=1;;
     --skip-setup) SKIP_SETUP=1;;
     --skip-bundle) SKIP_BUNDLE=1;;
     --portable-only) PORTABLE_ONLY=1;;
+    --no-upx) NO_UPX=1;;
     --with-qaac) WITH_QAAC=1;;
     --full) FULL=1;;
     --build-all) BUILD_ALL=1;;
@@ -136,6 +138,51 @@ pick_exe() { # pick_exe ZIP PATTERN DESTNAME
     rm -rf "$tmp"
 }
 
+fetch_upx() {
+    if [ "$NO_UPX" -eq 1 ]; then
+        echo "upx: off (--no-upx, dist exes may exceed 100MB)"
+        return 0
+    fi
+    if command -v upx >/dev/null 2>&1; then
+        echo "upx: system ($(upx --version | head -n 1))"
+        return 0
+    fi
+    mkdir -p "$CACHE/upx"
+    if [ ! -x "$CACHE/upx/upx" ]; then
+        echo "== fetch upx =="
+        dl "https://github.com/upx/upx/releases/download/v${UPX_VER}/upx-${UPX_VER}-amd64_linux.tar.xz" \
+            "$CACHE/upx.tar.xz" || { echo "!! upx fetch failed (exes stay unpacked, may exceed 100MB)"; return 0; }
+        tmpd="$(mktemp -d)"
+        tar -xJf "$CACHE/upx.tar.xz" -C "$tmpd"
+        hit="$(find "$tmpd" -name upx -type f | head -n 1)"
+        [ -n "$hit" ] || { rm -rf "$tmpd"; echo "!! upx binary not in tarball" >&2; return 0; }
+        cp -f "$hit" "$CACHE/upx/upx"; chmod +x "$CACHE/upx/upx"
+        rm -rf "$tmpd"
+    else
+        echo "cached: $CACHE/upx/upx"
+    fi
+    export PATH="$ROOT/$CACHE/upx:$PATH"
+    echo "upx: $("$ROOT/$CACHE/upx/upx" --version | head -n 1)"
+}
+
+pack_exes() { # pack_exes FILE... (ffmpeg/ffprobe; no-op under --no-upx)
+    [ "$NO_UPX" -eq 0 ] || return 0
+    command -v upx >/dev/null 2>&1 || { echo "!! upx missing, exes stay unpacked (may exceed 100MB)" >&2; return 0; }
+    local f
+    for f in "$@"; do
+        [ -f "$f" ] || continue
+        upx --best "$f" || echo "!! upx skipped $f" >&2
+    done
+}
+
+check_size() { # check_size FILE (100MB Cloudflare/Gitea cap)
+    local size; size="$(stat -c%s "$1")"
+    echo "size: $1 ($size bytes)"
+    if [ "$size" -gt 100000000 ]; then
+        echo "!! $1 exceeds 100MB: too big for Cloudflare/Gitea" >&2
+    fi
+}
+
 fetch_tools() {
     echo "== fetch =="
     dl "https://www.python.org/ftp/python/$PY_VER/python-$PY_VER-embed-amd64.zip" \
@@ -191,7 +238,7 @@ assemble_portable() {
     # 1. windows python embed
     if [ -s "$CACHE/python-embed.zip" ]; then
         unzip -q -o "$CACHE/python-embed.zip" -d "$PORTABLE/python"
-        # allow site + our app dir: _pth name varies (python312._pth)
+        # allow site + our app dir: _pth name varies (python314._pth)
         PTH="$(ls "$PORTABLE/python"/python*._pth | head -n 1)"
         { echo "../app"; echo "./Lib/site-packages"; grep -v "^#" "$PTH" | grep -v "^\.\./app" || true; echo "import site"; } | awk '!seen[$0]++' > "$PTH.new"; mv "$PTH.new" "$PTH"
         mkdir -p "$PORTABLE/python/Lib/site-packages"
@@ -280,6 +327,8 @@ build_setup_one() { # build_setup_one MODE (default|qaac|full)
         for f in $APPLE; do rm -f "$payload/tools/$f"; done
         echo "qaac + Apple DLLs excluded (pass --with-qaac, or --full for personal)"
     fi
+    # UPX the two giants so the setup stays under 100MB (qaac untouched).
+    pack_exes "$payload/tools/ffmpeg.exe" "$payload/tools/ffprobe.exe"
     du -sh "$payload"
     echo "qaac in setup: $(ls "$payload/tools/qaac.exe" 2>/dev/null || echo NO)"
 
@@ -299,6 +348,7 @@ build_setup_one() { # build_setup_one MODE (default|qaac|full)
         exec "$1" -V2 "$2"' "$STUBS" "$MAKENSIS" "build/installer-setup$tag.nsi"
     ls -la dist/
     file "dist/nightcore-$VER-x86_64-setup$tag.exe"
+    check_size "dist/nightcore-$VER-x86_64-setup$tag.exe"
 }
 
 build_bundle_one() { # build_bundle_one MODE (default|qaac|full)
@@ -385,6 +435,8 @@ build_bundle_one() { # build_bundle_one MODE (default|qaac|full)
 
     echo "== write spec (windows paths) =="
     local binlist; binlist="$(ls "$b/tools" | sed 's/.*/\("C:\\\\build\\\\tools\\\\&", "tools"\),/' | tr '\n' ' ')"
+    local use_upx="False"
+    if [ "$NO_UPX" -eq 0 ] && command -v upx >/dev/null 2>&1; then use_upx="True"; fi
     cat > "$b/bundle.spec" <<EOF
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import copy_metadata
@@ -406,7 +458,7 @@ exe = EXE(
     pyz, a.scripts, a.binaries, a.datas, [],
     name="nightcore-bundle",
     debug=False, bootloader_ignore_signals=False,
-    strip=False, upx=False, console=True,
+    strip=False, upx=$use_upx, console=True,
     disable_windowed_traceback=False, argv_emulation=False,
 )
 EOF
@@ -420,6 +472,7 @@ EOF
     cp -f "$b/dist/nightcore-bundle.exe" "$ROOT/dist/nightcore-$VER-x86_64-bundle$tag.exe"
     cd "$ROOT"
     ls -la "dist/nightcore-$VER-x86_64-bundle$tag.exe"
+    check_size "dist/nightcore-$VER-x86_64-bundle$tag.exe"
     echo "wine prefix left at $WINEPREFIX — delete it yourself:" >&2
     echo "  rm -rf \"$WINEPREFIX\"" >&2
 }
@@ -428,9 +481,10 @@ EOF
 resolve_upstream
 echo "versions: arch=x86_64 nightcore=${NIGHTCORE_VERSION:-latest} py=$PY_VER wine-py=$WINE_PY_VER"
 echo "versions: sox=$SOX_VER rubberband=$RUBBERBAND_VER lame=$LAME_VER opus=$OPUS_VER libopus=$LIBOPUS_VER"
-echo "versions: flac=$FLAC_VER vorbis=$VORBIS_VER mutagen=${MUTAGEN_VER:-latest} pyinstaller=${PYINSTALLER_VER:-latest} nsis=$NSIS_VER"
+echo "versions: flac=$FLAC_VER vorbis=$VORBIS_VER mutagen=${MUTAGEN_VER:-latest} pyinstaller=${PYINSTALLER_VER:-latest} nsis=$NSIS_VER upx=$([ "$NO_UPX" -eq 1 ] && echo off || echo "$UPX_VER")"
 if [ "$NO_DOWNLOAD" -eq 0 ]; then
     fetch_tools
+    fetch_upx
 else
     echo "(--no-download: skipping fetch, using cache/tools as-is)"
 fi

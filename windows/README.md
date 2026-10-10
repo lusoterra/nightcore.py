@@ -17,6 +17,7 @@ One script does everything on Linux:
 ./build.sh --portable-only                      # stop after build/portable
 ./build.sh --skip-setup | --skip-bundle         # only one installer type
 ./build.sh [--with-qaac|--full|--build-all]     # qaac variants
+./build.sh --no-upx                             # skip UPX packing (exes may exceed 100MB)
 ```
 
 | Flag          | Setup / Bundle result                                              |
@@ -30,6 +31,13 @@ Without a flag, `qaac.exe`, `refalac.exe` and the 8 Apple DLLs are stripped from
 every payload. `--with-qaac` keeps the exe but strips the DLLs (thin setup: drag-drop
 your own into `tools\`); `--full` keeps both (personal builds only).
 
+`ffmpeg.exe`/`ffprobe.exe` are UPX-packed in setup payloads and the
+bundle's binaries are UPX-packed too, so every `dist` exe stays under
+the 100MB Cloudflare/Gitea cap (each build prints its byte size and
+warns past it; qaac/Apple DLLs are never packed). UPX-packed binaries
+can trip Windows Defender/SmartScreen heuristics — `--no-upx` skips it
+if clean reputation matters more to you than file size.
+
 ## Pin versions
 
 Every tool version plus nightcore itself is pinned in `versions.env`:
@@ -37,13 +45,14 @@ Every tool version plus nightcore itself is pinned in `versions.env`:
 | Variable | Pins | Default |
 |---|---|---|
 | `NIGHTCORE_VERSION` | nightcore app source tag (empty = latest) | _(latest)_ |
-| `PY_VER` | Windows Python embed | `3.12.7` |
+| `PY_VER` | Windows Python embed | `3.14.8` |
 | `WINE_PY_VER` | Windows Python under Wine (defaults to `PY_VER`) | _(follows `PY_VER`)_ |
 | `SOX_VER` / `RUBBERBAND_VER` / `LAME_VER` | sox / rubberband / lame | `14.4.2` / `3.3.0` / `3.100.1` |
 | `OPUS_VER` / `LIBOPUS_VER` / `OPUS_FALLBACK_ZIP` | opus-tools (+ fallback zip) | `0.2-49-g4b96717` / `1.6.1-11-g788cc89` |
 | `FLAC_VER` / `VORBIS_VER` | flac / vorbiscomment | `1.4.3` / `1.2.0` |
 | `MUTAGEN_VER` / `PYINSTALLER_VER` | PyPI packages (empty = latest) | _(latest)_ |
 | `NSIS_VER` | NSIS .debs for the setup | `3.12-1` |
+| `UPX_VER` | UPX packer (keeps dist exes under 100MB) | `5.2.1` |
 | `FFMPEG_URL` / `SOX_URL` / ... | full download URLs (mirrors) | _(built from the versions above)_ |
 
 ```bash
