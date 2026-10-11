@@ -210,6 +210,42 @@ def test_opus_stamp_readback_native(monkeypatch, capsys, tmp_path):
     assert fields.get("title") == "tone [Nightcore 1.2x]"
 
 
+def test_lossy_source_pipeline_fingerprint(monkeypatch, capsys, tmp_path):
+    # No fixture needed: synthesized tones keep this hermetic. Lossy
+    # sources (AAC here) record source-mode/source-bitrate in the
+    # pipeline; lossless sources record depth instead, never bitrate.
+    _require_tools("ffmpeg", "ffprobe", "metaflac")
+    src = tmp_path / "tone.m4a"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+         "sine=frequency=440:duration=3",
+         "-c:a", "aac", "-b:a", "128k", str(src)],
+        check=True,
+    )
+    out = tmp_path / "tone.flac"
+    rc, _ = _run(monkeypatch, capsys, [str(src), "-s", "1.2", "-o", str(out)])
+    assert rc == 0
+    pipe = read_format_tag(out, "encoder_settings")
+    assert pipe is not None
+    assert "source-codec=aac" in pipe
+    assert "source-mode=VBR" in pipe
+    m = re.search(r"source-bitrate=(\d+k)", pipe)
+    assert m is not None and int(m.group(1)[:-1]) > 0
+    # Lossless control: depth recorded, bitrate/mode omitted.
+    lossless = tmp_path / "tone.flac"
+    _sine_flac(lossless)
+    lossless_out = tmp_path / "lossless.flac"
+    rc, _ = _run(
+        monkeypatch, capsys, [str(lossless), "-s", "1.2",
+                              "-o", str(lossless_out)])
+    assert rc == 0
+    lossless_pipe = read_format_tag(lossless_out, "encoder_settings")
+    assert lossless_pipe is not None
+    assert "source-depth=" in lossless_pipe
+    assert "source-bitrate=" not in lossless_pipe
+    assert "source-mode=" not in lossless_pipe
+
+
 def test_opus_albumartist_canonical(monkeypatch, capsys, tmp_path):
     # Template albumartist= must land as ALBUMARTIST, not the movenc
     # alias spelling ALBUM_ARTIST.

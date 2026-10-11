@@ -100,6 +100,9 @@ def run_conversion(args, input_path, out_dir, ctx):
     is_lossy_output = naming["is_lossy_output"]
     bits = naming["bits"]
     codec = naming["codec"]
+    src_mode = naming["mode"]
+    src_bit_rate = naming["bit_rate"]
+    src_encoder = naming["encoder"]
     pitch_mode = naming["pitch_mode"]
     pitch_rb = naming["pitch_rb"]
     weird_suffix = naming["weird_suffix"]
@@ -170,6 +173,13 @@ def run_conversion(args, input_path, out_dir, ctx):
             # this job applies no shift, so the source record carries on
             # instead of a blank 1.0x erasing the file's true history.
             f_speed, f_st = naming["inherited"]
+        # Lossy origin fingerprint: mode/bitrate/encoder ride the
+        # pipeline alongside the codec (lossless sources carry depth/rate
+        # instead; a FLAC's container bitrate is content-dependent noise,
+        # not a quality signal). Same rounding as lossy_suffix_for.
+        src_kbps = (round(src_bit_rate / 1000)
+                    if src_bit_rate is not None else 0)
+        lossy_origin = codec in LOSSY_CODECS
         pipeline_params = dict(
             speed=f_speed, semitones=f_st,
             pitch_mode=(pitch_mode or f_st != 0.0),
@@ -177,7 +187,11 @@ def run_conversion(args, input_path, out_dir, ctx):
             out_format=args.format,
             lossy_opts=(lossy_opts if is_lossy_output else ()),
             source_rate=sample_rate, source_bits=bits,
-            source_codec=codec)
+            source_codec=codec,
+            source_mode=(src_mode if lossy_origin else None),
+            source_bitrate=(f"{src_kbps}k"
+                            if lossy_origin and src_kbps > 0 else None),
+            source_encoder=(src_encoder if lossy_origin else None))
 
     if (not args.denightcore and not pitch_mode and speed == 1.0
             and target_rate is None

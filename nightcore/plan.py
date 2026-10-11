@@ -98,11 +98,13 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
         if mode == "VBR" and format_bit_rate:
             # Stream bit_rate on VBR MP3s is unreliable; use file average.
             bit_rate = format_bit_rate
-    elif codec == "opus":
+    elif codec in ("aac", "opus"):
         # Opus has true CBR and VBR modes but stores no flag for them.
+        # AAC exposes no in-band mode flag either, so it shares the
+        # packet scan (best available signal; AAC CBR packets still
+        # vary, so most AAC reads VBR).
         mode = packet_vbr_info(input_path)
-    # Vorbis is variable by design and AAC exposes no reliable in-band
-    # mode signal, so neither gets a VBR/CBR label.
+    # Vorbis is variable by design, so it gets no VBR/CBR label.
     lossy_suffix = lossy_suffix_for(codec, bit_rate, mode, encoder)
     if lossy_suffix:
         # e.g. [mp3 CBR 320k LAME3.100]: documents a lossy origin.
@@ -277,6 +279,9 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
         "is_lossy_output": is_lossy_output,
         "bits": bits,
         "codec": codec,
+        "bit_rate": bit_rate,
+        "mode": mode,
+        "encoder": encoder,
         "pitch_mode": pitch_mode,
         "pitch_rb": pitch_rb,
         "weird_suffix": weird_suffix,
