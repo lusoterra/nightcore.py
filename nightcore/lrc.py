@@ -5,8 +5,10 @@ import sys
 import tempfile
 
 from .constants import AUDIO_EXTS, _LOSSLESS_EXTS, _LRC_LENGTH, _LRC_STAMP
+from .naming import claim_output_path, single_parent
 from .plan import predict_audio_stem
 from .tags import sanitize_filename
+from .util import _active_outputs, batch_prefix, say
 
 def _lrc_frac_to_ms(frac):
     """Fractional LRC digits to milliseconds (None -> 0).
@@ -123,13 +125,24 @@ def run_lrc(args, input_path, out_dir, ctx):
         # input stem, shift-suffixed when retiming.
         stem = (sanitize_filename(input_path.stem) if copy_only else
                 sanitize_filename(f"{input_path.stem} [{speed!r}x]"))
-    output_path = ((out_dir if out_dir is not None else input_path.parent)
+    output_path = ((out_dir if out_dir is not None
+                    else single_parent(args, input_path))
                    / (stem + ".lrc"))
+    head = batch_prefix(ctx)
     if output_path == input_path:
         print("Error: output would overwrite input, aborting", file=sys.stderr)
         return 1
+    if out_dir is not None or ctx.get("batch_total", 0) > 1:
+        # Same collision guard as audio outputs: several inputs (or a
+        # batch folder) funnelling into one directory must not overwrite
+        # each other when names collide.
+        output_path = claim_output_path(ctx, output_path)
+        if output_path == input_path:
+            print("Error: output would overwrite input, aborting",
+                  file=sys.stderr)
+            return 1
     if args.dry_run:
-        print(output_path)
+        print(f"{head}{output_path}")
         return 0
     if output_path.exists() and not args.overwrite:
         if out_dir is not None:
@@ -151,6 +164,8 @@ def run_lrc(args, input_path, out_dir, ctx):
         except OSError as e:
             print(f"Error: cannot read {input_path}: {e}", file=sys.stderr)
             return 1
+        say(f"{head}{output_path.name}: copy lyrics (already timed)")
+        _active_outputs.add(output_path)
         tmpname = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -165,6 +180,9 @@ def run_lrc(args, input_path, out_dir, ctx):
                 Path(tmpname).unlink(missing_ok=True)
             print(f"Error: cannot write {output_path}: {e}", file=sys.stderr)
             return 1
+        finally:
+            _active_outputs.discard(output_path)
+        ctx["converted"] = ctx.get("converted", 0) + 1
         return 0
 
     try:
@@ -191,6 +209,10 @@ def run_lrc(args, input_path, out_dir, ctx):
     # (A BOM on non-UTF-8 input stays inside the latin-1 text verbatim.)
     keep_bom = has_bom and enc == "utf-8"
     data = (b"\xef\xbb\xbf" if keep_bom else b"") + out.encode(enc)
+    noun = "timestamp" if count == 1 else "timestamps"
+    say(f"{head}{output_path.name}: retime lyrics {speed!r}x "
+        f"({count} {noun})")
+    _active_outputs.add(output_path)
     tmpname = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -205,4 +227,7 @@ def run_lrc(args, input_path, out_dir, ctx):
             Path(tmpname).unlink(missing_ok=True)
         print(f"Error: cannot write {output_path}: {e}", file=sys.stderr)
         return 1
+    finally:
+        _active_outputs.discard(output_path)
+    ctx["converted"] = ctx.get("converted", 0) + 1
     return 0

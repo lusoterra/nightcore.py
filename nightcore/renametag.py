@@ -173,7 +173,7 @@ def run_renametag(args, input_path, out_dir, ctx):
               else single_parent(args, input_path))
     output_path = (parent
                    / (sanitize_filename(name_base) + out_ext))
-    if out_dir is not None:
+    if out_dir is not None or ctx.get("batch_total", 0) > 1:
         output_path = claim_output_path(ctx, output_path)
     if args.output is not None and out_dir is None:
         output_path = parent / args.output

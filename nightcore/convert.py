@@ -346,7 +346,7 @@ def run_conversion(args, input_path, out_dir, ctx):
             parent = single_parent(args, input_path)
         outputs = [(suffix, parent / (sanitize_filename(name_base)
                                       + out_ext)) for suffix, _ in jobs]
-        if out_dir is not None:
+        if out_dir is not None or ctx.get("batch_total", 0) > 1:
             outputs = [(suffix, claim_output_path(ctx, output_path))
                        for suffix, output_path in outputs]
         if args.output is not None and out_dir is None:
@@ -371,11 +371,12 @@ def run_conversion(args, input_path, out_dir, ctx):
                 parent / (sanitize_filename(name_base + suffix) + out_ext),
             ))
 
-    if out_dir is not None:
+    if out_dir is not None or ctx.get("batch_total", 0) > 1:
         # Batch mode funnels many inputs into one directory, so
         # tag-derived names can collide (duplicate files with identical
         # tags). The first file keeps the name; later ones get
-        # " (2)", " (3)", ...
+        # " (2)", " (3)", ... Same for several explicit inputs sharing
+        # one --output-folder (or one directory).
         outputs = [(suffix, claim_output_path(ctx, output_path))
                    for suffix, output_path in outputs]
 

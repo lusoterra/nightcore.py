@@ -28,9 +28,11 @@ def parse_arguments():
     parser.add_argument(
         "input",
         type=str,
-        nargs="?",
-        default=None,
-        help="Input audio file (not needed for --pitch-diff/--speed-diff;\n.lrc lyrics allowed with -s: retimed copy)"
+        nargs="*",
+        default=[],
+        help="Input audio file(s) (not needed for --pitch-diff/--speed-diff;\n"
+             ".lrc lyrics allowed with -s: retimed copy; several files\n"
+             "share the same settings)"
     )
 
     parser.add_argument(
@@ -183,7 +185,8 @@ def parse_arguments():
         default=None,
         metavar="FILE",
         help="Override the output filename (extension required, e.g.\n"
-             "-o mix.mp3). Single-file runs only: --batch + -o is an error"
+             "-o mix.mp3). Single-input runs only: --batch + -o is an error,\n"
+             "as are several input files + -o"
     )
 
     parser.add_argument(
@@ -194,7 +197,8 @@ def parse_arguments():
         help="Base for batch folders (encodes/denightcore/renametag/\n"
              "std-samplerate). Existing DIR nests them (DIR/encodes/...);\n"
              "a missing DIR takes the folder's place (DIR/[codec]/).\n"
-             "Single-file runs redirect their output there instead"
+             "Single-file runs redirect their output there instead\n"
+             "(several input files share it the same way)"
     )
 
     parser.add_argument(
@@ -521,9 +525,10 @@ def main():
         speed = 1 / speed
 
     if args.output is not None:
-        if args.batch is not None:
+        if args.batch is not None or len(args.input) > 1:
             print("Error: -o/--output needs a single input "
-                  "(no --batch: one name cannot fit many files)",
+                  "(no --batch, no several inputs: one name cannot fit "
+                  "many files)",
                   file=sys.stderr)
             return 1
         if not Path(args.output).suffix:
@@ -637,8 +642,8 @@ def main():
 
     if args.batch is not None:
         if args.input:
-            print("Error: --batch takes a directory, not a file "
-                  "(drop the positional input)", file=sys.stderr)
+            print("Error: --batch takes a directory, not file(s) "
+                  "(drop the positional inputs)", file=sys.stderr)
             return 1
         batch_dir = Path(args.batch)
         if not batch_dir.is_dir():
@@ -730,29 +735,86 @@ def main():
     if not args.input:
         print("Error: input file is required", file=sys.stderr)
         return 1
+    inputs = [Path(p) for p in args.input]
+    if len(inputs) == 1:
+        single = inputs[0]
+        if retags:
+            # Single-file retags copy to ./renametag/ like batch (originals
+            # stay); --in-place moves alongside instead (asks [y/N] first),
+            # -o names the copy verbatim.
+            op_base = None
+            if args.output is None:
+                if args.in_place and not args.dry_run:
+                    try:
+                        answer = input(
+                            f"Renametag {single.name} in place? "
+                            f"Original will be renamed and overwritten. "
+                            f"[y/N] ").strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        answer = ""
+                    if answer != "y":
+                        print("Aborted.", file=sys.stderr)
+                        return 1
+                op_base = (None if args.in_place else
+                           batch_op_dir(args, "renametag"))
+                if op_base is not None and not args.dry_run:
+                    op_base.mkdir(parents=True, exist_ok=True)
+            rc = run_renametag(args, single, op_base, ctx)
+        else:
+            rc = run_conversion(args, single, None, ctx)
+        print_summary(ctx)
+        return rc
+    # Several input files (audio and/or .lrc lyrics) share one settings
+    # run: same flags apply to each, no for-loop needed. Outputs land
+    # where a single-file run would put them (alongside each input, or
+    # redirected via --output-folder); -o cannot name them all.
     if retags:
-        # Single-file retags copy to ./renametag/ like batch (originals
-        # stay); --in-place moves alongside instead (asks [y/N] first),
-        # -o names the copy verbatim.
-        op_base = None
-        if args.output is None:
-            if args.in_place and not args.dry_run:
-                try:
-                    answer = input(
-                        f"Renametag {Path(args.input).name} in place? "
-                        f"Original will be renamed and overwritten. "
-                        f"[y/N] ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    answer = ""
-                if answer != "y":
-                    print("Aborted.", file=sys.stderr)
-                    return 1
-            op_base = (None if args.in_place else
-                       batch_op_dir(args, "renametag"))
-            if op_base is not None and not args.dry_run:
-                op_base.mkdir(parents=True, exist_ok=True)
-        rc = run_renametag(args, Path(args.input), op_base, ctx)
+        if args.output is not None:
+            print("Error: -o/--output needs a single input "
+                  "(one name cannot fit many files)", file=sys.stderr)
+            return 1
+        if args.in_place and not args.dry_run:
+            try:
+                answer = input(
+                    f"Renametag {len(inputs)} file(s) in place? "
+                    f"Originals will be renamed and overwritten. "
+                    f"[y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer != "y":
+                print("Aborted.", file=sys.stderr)
+                return 1
+        op_base = (None if args.in_place
+                   else batch_op_dir(args, "renametag"))
+        if op_base is not None and not args.dry_run:
+            op_base.mkdir(parents=True, exist_ok=True)
+        ctx["batch_total"] = len(inputs)
+        failed = []
+        for bi, candidate in enumerate(inputs):
+            ctx["batch_index"] = bi
+            if run_renametag(args, candidate, op_base, ctx) != 0:
+                failed.append(candidate.name)
+        verb = "Would renametag" if args.dry_run else "Renametagged"
+        dest = (f"in place ({len(inputs)} file(s))"
+                if op_base is None else f"-> {op_base}")
+        skipped = ctx.get("skipped", 0)
+        note = f" ({skipped} skipped)" if skipped else ""
+        return finish_batch(
+            ctx, inputs, failed,
+            f"{verb}: {len(inputs)} file(s){note} {dest}")
+    ctx["batch_total"] = len(inputs)
+    failed = []
+    for bi, candidate in enumerate(inputs):
+        ctx["batch_index"] = bi
+        if run_conversion(args, candidate, None, ctx) != 0:
+            failed.append(candidate.name)
+    verb = "Would convert" if args.dry_run else "Done"
+    skipped = ctx.get("skipped", 0) + ctx.get("skipped_notags", 0)
+    note = f" ({skipped} skipped)" if skipped else ""
+    if args.output_folder is not None:
+        dest = f"-> {Path(args.output_folder)}"
     else:
-        rc = run_conversion(args, Path(args.input), None, ctx)
-    print_summary(ctx)
-    return rc
+        dest = "alongside the inputs"
+    return finish_batch(
+        ctx, inputs, failed,
+        f"{verb}: {len(inputs)} file(s){note} {dest}")
