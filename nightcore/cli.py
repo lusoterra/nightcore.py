@@ -766,8 +766,8 @@ def main():
         return rc
     # Several input files (audio and/or .lrc lyrics) share one settings
     # run: same flags apply to each, no for-loop needed. Outputs land
-    # where a single-file run would put them (alongside each input, or
-    # redirected via --output-folder); -o cannot name them all.
+    # in the current directory (or redirected via --output-folder);
+    # -o cannot name them all.
     if retags:
         if args.output is not None:
             print("Error: -o/--output needs a single input "
@@ -814,7 +814,7 @@ def main():
     if args.output_folder is not None:
         dest = f"-> {Path(args.output_folder)}"
     else:
-        dest = "alongside the inputs"
+        dest = "in the current directory"
     return finish_batch(
         ctx, inputs, failed,
         f"{verb}: {len(inputs)} file(s){note} {dest}")

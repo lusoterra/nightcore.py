@@ -295,8 +295,8 @@ def run_conversion(args, input_path, out_dir, ctx):
     # by default the base is the input's own stem. The Title tag
     # follows the tag template (default "Title [Nightcore diff]");
     # the Artist tag always rides through untouched (source-mapped).
-    # Names are sanitized for Linux/Windows-safe filenames. Preserve
-    # input directory. -D rebuilds names from tags (Artist - Title
+    # Names are sanitized for Linux/Windows-safe filenames. Outputs land
+    # in the current directory. -D rebuilds names from tags (Artist - Title
     # [denightcored BP/NBP], plus [rate] when resampling now); the
     # filename is never trusted.
     if args.denightcore:
@@ -376,7 +376,7 @@ def run_conversion(args, input_path, out_dir, ctx):
         # tag-derived names can collide (duplicate files with identical
         # tags). The first file keeps the name; later ones get
         # " (2)", " (3)", ... Same for several explicit inputs sharing
-        # one --output-folder (or one directory).
+        # the current directory (or one --output-folder).
         outputs = [(suffix, claim_output_path(ctx, output_path))
                    for suffix, output_path in outputs]
 

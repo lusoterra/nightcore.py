@@ -170,7 +170,10 @@ def run_renametag(args, input_path, out_dir, ctx):
     else:
         name_base = render_autorename(args, artist, original_title, stem)
     parent = (out_dir if out_dir is not None
-              else single_parent(args, input_path))
+              else (input_path.parent
+                    if getattr(args, "in_place", False)
+                    and args.output is None
+                    else single_parent(args, input_path)))
     output_path = (parent
                    / (sanitize_filename(name_base) + out_ext))
     if out_dir is not None or ctx.get("batch_total", 0) > 1:

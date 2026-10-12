@@ -53,8 +53,8 @@ output always prints.
 Resample to next standard rate via SoX (lossless output only).
 -R means standard-rate-only output to
 \fI./std-samplerate/[format]/\fR in batch mode (single-file runs
-resample in place, alongside the input); no weird-rate copy is kept. Default keeps the non-standard rate,
-bit-perfect, alongside the input. Cannot be used with lossy output
+resample in place, in the current directory); no weird-rate copy is kept. Default keeps the non-standard rate,
+bit-perfect, in the current directory. Cannot be used with lossy output
 (lossy encoders manage rates themselves; resample a lossless
 intermediate first).
 .TP

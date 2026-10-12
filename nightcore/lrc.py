@@ -93,7 +93,7 @@ def find_parent_audio(lrc_path):
 
 
 def run_lrc(args, input_path, out_dir, ctx):
-    """Retime .lrc lyrics (or copy them at speed 1), next to the music.
+    """Retime .lrc lyrics (or copy them at speed 1), in the output directory.
 
     With -s the timestamps scale by 1/speed; at speed 1 (plain
     transcoding, e.g. a --batch sharing run) the file is copied

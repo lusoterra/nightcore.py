@@ -228,9 +228,9 @@ def batch_op_dir(args, op, fmt=None):
 
 def single_parent(args, input_path):
     """Output directory for single-file runs: --output-folder wins,
-    else alongside the input. Created unless dry-run."""
+    else the current directory. Created unless dry-run."""
     if args.output_folder is None:
-        return input_path.parent
+        return Path.cwd()
     parent = Path(args.output_folder)
     if not args.dry_run:
         parent.mkdir(parents=True, exist_ok=True)

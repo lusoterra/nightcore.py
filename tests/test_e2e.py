@@ -351,6 +351,9 @@ def test_denightcore_stamp_only_roundtrip(monkeypatch, capsys, tmp_path):
     assert rc == 0
     renamed = tmp_path / "totally renamed.flac"
     work.rename(renamed)
+    # Single-file outputs land in the current directory: run from tmp_path
+    # so the restored file lands next to its source.
+    monkeypatch.chdir(tmp_path)
     rc, _ = _run(monkeypatch, capsys, [str(renamed), "-D", "-y"])
     assert rc == 0
     outs = sorted(tmp_path.glob("*denightcored BP*.flac"))
