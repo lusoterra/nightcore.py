@@ -29,7 +29,7 @@ of Nightcore. You can, of course, slow down music with it as well.
 - Filenames mirror titles: `Artist - Title [Nightcore 2.17st].flac` (rounded shift, no quality clutter — that lives in the pipeline tag; `[rate]` stays when resampling, `[denightcored BP/NBP]` on undos; customize on the fly with --autorename), titles carry just `Title [Nightcore 2.17st]` by default (rounded to 2 decimals), and `title=`/`artist=` lines in the tag template accept bare `{title}`/`{diff}`/`{quality}`/`{resample}`/`{denightcore}` slots (`{diff(2)}` rounds for display) — an explicit `title=` is used verbatim. Artist and all other source tags ride through untouched by default
 - Undo anything with -D (pipeline-trusted, filenames aren't): names rebuild as `Artist - Title [quality] [denightcored BP/NBP]`, the pipeline records the undo so double-undos refuse, and pure-speedup cycles are bit-exact
 - Every output carries two marks by default: a `Made with nightcore.py` DESCRIPTION (branding, `--no-stamp` drops it) and an opusenc-style `encoder_settings` pipeline tag (shift, resample, source fingerprint, tool versions — what `-D` reads; `--no-pipeline` drops it independently)
-- Safe by default: dry-run with -n, never overwrites without -y, Ctrl+C deletes partials instead of leaving corrupt files
+- Safe by default: dry-run with -n, never overwrites without -y, Ctrl+C finishes the current file then stops (twice aborts and deletes partials) instead of leaving corrupt files
 
 ## Requirements
 

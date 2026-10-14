@@ -178,10 +178,10 @@ def run_lrc(args, input_path, out_dir, ctx):
         except OSError as e:
             if tmpname is not None:
                 Path(tmpname).unlink(missing_ok=True)
+            _active_outputs.discard(output_path)
             print(f"Error: cannot write {output_path}: {e}", file=sys.stderr)
             return 1
-        finally:
-            _active_outputs.discard(output_path)
+        _active_outputs.discard(output_path)
         ctx["converted"] = ctx.get("converted", 0) + 1
         return 0
 
@@ -225,9 +225,9 @@ def run_lrc(args, input_path, out_dir, ctx):
     except OSError as e:
         if tmpname is not None:
             Path(tmpname).unlink(missing_ok=True)
+        _active_outputs.discard(output_path)
         print(f"Error: cannot write {output_path}: {e}", file=sys.stderr)
         return 1
-    finally:
-        _active_outputs.discard(output_path)
+    _active_outputs.discard(output_path)
     ctx["converted"] = ctx.get("converted", 0) + 1
     return 0

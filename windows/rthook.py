@@ -44,22 +44,20 @@ if _DIRS:
             pass
 
 # Windows-safe Ctrl+C: os.killpg does not exist on nt. Patch after import;
-# hook runs early so the handler installed by cli.main() picks up the fix
-# (cli.main does signal.signal(SIGINT, util._on_sigint) at startup, which
-# re-reads the attribute — patching util._on_sigint is sufficient).
+# hook runs early so the kill helper the SIGINT handler calls is fixed
+# before anything runs (patching util._kill_active_tool is sufficient).
 try:
     import nightcore.util as _u
 
     if os.name == "nt":
-        def _on_sigint_win(signum, frame):
+        def _kill_active_tool_win():
             proc = getattr(_u, "_active_proc", None)
             if proc is not None:
                 try:
                     proc.kill()
                 except Exception:
                     pass
-            raise KeyboardInterrupt
 
-        _u._on_sigint = _on_sigint_win
+        _u._kill_active_tool = _kill_active_tool_win
 except Exception:
     pass

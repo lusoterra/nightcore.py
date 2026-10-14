@@ -373,6 +373,19 @@ def finish_batch(ctx, files, failed, ok_message):
     return 0
 
 
+def _stop_early(ctx, files, failed, done):
+    """Graceful stop after one Ctrl+C: tally what finished, exit 130.
+
+    The current file completed (nothing partial), so there is nothing
+    to delete; unprocessed files are simply never started.
+    """
+    ctx["failed"] = failed
+    print(f"Stopped after {done} of {len(files)} file(s) (interrupted).",
+          file=sys.stderr)
+    print_summary(ctx)
+    return 130
+
+
 def copy_batch_art(batch_dir, dest_dirs, dry_run, overwrite):
     """Copy cover art found in batch_dir into each dest dir.
 
@@ -738,6 +751,8 @@ def main():
             ctx["batch_total"] = len(files)
             failed = []
             for bi, candidate in enumerate(files):
+                if util._stop_requested:
+                    return _stop_early(ctx, files, failed, bi)
                 ctx["batch_index"] = bi
                 if run_renametag(args, candidate, op_base, ctx) != 0:
                     failed.append(candidate.name)
@@ -769,6 +784,8 @@ def main():
         ctx["batch_total"] = len(files)
         failed = []
         for bi, candidate in enumerate(files):
+            if util._stop_requested:
+                return _stop_early(ctx, files, failed, bi)
             ctx["batch_index"] = bi
             if run_conversion(args, candidate, out_base, ctx) != 0:
                 failed.append(candidate.name)
@@ -841,6 +858,8 @@ def main():
         ctx["batch_total"] = len(inputs)
         failed = []
         for bi, candidate in enumerate(inputs):
+            if util._stop_requested:
+                return _stop_early(ctx, inputs, failed, bi)
             ctx["batch_index"] = bi
             if run_renametag(args, candidate, op_base, ctx) != 0:
                 failed.append(candidate.name)
@@ -855,6 +874,8 @@ def main():
     ctx["batch_total"] = len(inputs)
     failed = []
     for bi, candidate in enumerate(inputs):
+        if util._stop_requested:
+            return _stop_early(ctx, inputs, failed, bi)
         ctx["batch_index"] = bi
         if run_conversion(args, candidate, None, ctx) != 0:
             failed.append(candidate.name)

@@ -1,11 +1,13 @@
 """Process state, tool runner, and tiny output helpers."""
 
 import argparse
+import atexit
 import os
 import shutil
 import signal
 import subprocess
 import sys
+from pathlib import Path
 
 def _enable_windows_vt():
     """Best-effort: let Windows consoles render ANSI escapes.
@@ -38,16 +40,26 @@ def missing_tools(*names):
     return [n for n in names if shutil.which(n) is None]
 
 
-# Ctrl+C handling: any press kills the running tool (if any) and exits
-# cleanly at 130 with no traceback. Tools run detached (own session),
-# so the terminal's SIGINT reaches only this process; the handler makes
-# sure a tracked tool dies too instead of encoding on orphaned.
-# Partial outputs tracked in _active_outputs are deleted; tempdirs
-# clean themselves via finally.
+# Ctrl+C handling, two stages, no tracebacks either way. Tools run
+# detached (own session), so the terminal's SIGINT reaches only this
+# process. First press sets _stop_requested: the current file finishes
+# and batch loops stop between files (exit 130). Second press kills
+# the running tool (so nothing encodes on orphaned) and raises
+# SystemExit(130): finally blocks still tidy tempdirs, and the atexit
+# hook below deletes tracked partial outputs. Temporary WAVs and
+# renametag temps clean themselves via finally.
 _active_proc = None
 
 
 _active_outputs = set()
+
+
+# Set by the first Ctrl+C; batch loops stop between files when true.
+_stop_requested = False
+
+
+# Set by the second Ctrl+C; the atexit hook reports and cleans up.
+_aborted = False
 
 
 # Set from -q/--quiet in main(): level 1 hushes tool spam (stages and
@@ -75,14 +87,70 @@ def batch_prefix(ctx):
             f"/{total:0{width}d}] ")
 
 
-def _on_sigint(signum, frame):
+def _kill_active_tool():
+    """SIGKILL the tracked tool's process group; best effort, never raises.
+
+    Split out so the Windows bundle hook can patch just this (os.killpg
+    does not exist on nt) without duplicating the two-stage handler.
+    """
     proc = _active_proc
     if proc is not None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            pass
+
+
+def _on_sigint(signum, frame):
+    """Two-stage interrupt: finish-then-stop, then abort.
+
+    First press only flags _stop_requested (batch loops stop between
+    files once the current one finishes) and returns, so nothing
+    erupts mid-syscall and no traceback prints. Second press kills
+    the running tool and raises SystemExit(130): partial outputs stay
+    tracked and the atexit hook deletes them.
+    """
+    global _stop_requested, _aborted
+    if not _stop_requested:
+        _stop_requested = True
+        print("\nInterrupted: finishing the current file, then stopping. "
+              "Press Ctrl+C again to abort now "
+              "(partial files are deleted).", file=sys.stderr)
+        return
+    _aborted = True
+    _kill_active_tool()
+    raise SystemExit(130)
+
+
+def _cleanup_partials():
+    """Delete tracked partial outputs; returns how many went."""
+    partials = list(_active_outputs)
+    _active_outputs.clear()
+    gone = 0
+    for partial in partials:
+        try:
+            Path(partial).unlink(missing_ok=True)
+            gone += 1
         except OSError:
             pass
-    raise KeyboardInterrupt
+    return gone
+
+
+def _exit_cleanup():
+    """atexit hook: report an abort and delete partial outputs.
+
+    No-op on normal exits (nothing is tracked once files succeed).
+    """
+    if _aborted:
+        gone = _cleanup_partials()
+        if gone:
+            print(f"Aborted: {gone} partial file(s) deleted.",
+                  file=sys.stderr)
+        else:
+            print("Aborted.", file=sys.stderr)
+
+
+atexit.register(_exit_cleanup)
 
 
 def run_tool(cmd):
