@@ -110,6 +110,32 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        "--stats",
+        type=str,
+        nargs="?",
+        const=".",
+        default=None,
+        metavar="DIR",
+        help="Print statistics for every audio file in DIR (default: .)\n"
+             "at depth 1 and exit: lyrics coverage, speed average and\n"
+             "distribution, shift source, pitch, quality/lossless counts,\n"
+             "containers, source codecs, bitrates, depth, sample rates\n"
+             "(deeper packs: add --recurse)"
+    )
+
+    parser.add_argument(
+        "--recurse",
+        type=int,
+        nargs="?",
+        const=-1,
+        default=None,
+        metavar="N",
+        help="With --stats: descend into subdirectories (for Artist/Album\n"
+             "packs). Bare flag scans everything; --recurse N caps at N\n"
+             "levels (the folder itself is level 1)"
+    )
+
+    parser.add_argument(
         "-p", "--pitch",
         action="store_true",
         default=False,
@@ -457,6 +483,55 @@ def main():
             return 1
         print(f"{st!r}st ({st * 100!r} cents) = speed {speed_from_semitones(st)!r}x")
         return 0
+
+    if args.recurse is not None and args.stats is None:
+        print("Error: --recurse needs --stats "
+              "(it only widens the folder report scan)", file=sys.stderr)
+        return 1
+
+    if args.stats is not None:
+        # Read-only folder report: nothing is converted, so any flag
+        # that would change audio (or select other modes) is a loud
+        # error instead of a silently ignored passenger.
+        if args.batch is not None:
+            print("Error: --stats cannot be combined with --batch "
+                  "(it scans a directory itself)", file=sys.stderr)
+            return 1
+        if args.recurse is not None and args.recurse != -1 \
+                and args.recurse < 1:
+            print("Error: --recurse needs a depth of 1 or more "
+                  "(bare --recurse scans everything)", file=sys.stderr)
+            return 1
+        if args.input:
+            print("Error: --stats takes a directory, not file(s) "
+                  "(drop the positional inputs)", file=sys.stderr)
+            return 1
+        for flag, bad in (("-s/--speed", args.speed != 1.0),
+                           ("-S/--semitones", args.semitones is not None),
+                           ("-p/--pitch", args.pitch),
+                           ("-r/--reciprocal", args.reciprocal),
+                           ("-R/--resample", args.resample),
+                           ("-D/--denightcore", args.denightcore),
+                           ("-N/--renametag", args.renametag),
+                           ("--in-place", args.in_place),
+                           ("-o/--output", args.output is not None),
+                           ("--output-folder", args.output_folder is not None),
+                           ("--tag-template", args.tag_template is not None),
+                           ("--no-delete-tags", args.no_delete_tags),
+                           ("--cover", args.cover is not None),
+                           ("--lossy-opts", args.lossy_opts is not None)):
+            if bad:
+                print(f"Error: --stats cannot be combined with {flag} "
+                      "(nothing is converted)", file=sys.stderr)
+                return 1
+        from .stats import run_stats
+        if args.recurse is None:
+            max_depth = 1
+        elif args.recurse == -1:
+            max_depth = None
+        else:
+            max_depth = args.recurse
+        return run_stats(args.stats, max_depth=max_depth)
 
 
     cover_flag = None
