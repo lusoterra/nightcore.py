@@ -268,6 +268,14 @@ def test_speed_rows_align():
     assert len({ln.index("█") for ln in rows}) == 1
 
 
+def test_progress_zero_padded(monkeypatch):
+    from nightcore import stats as stats_mod
+    fake = _FakeTty()
+    monkeypatch.setattr(sys, "stderr", fake)
+    stats_mod._progress_tick(95, 220, "song.flac", 0)
+    assert "Stats [095/220]" in fake.text
+
+
 def test_progress_never_wraps(monkeypatch):
     # A narrow stderr terminal must truncate, never wrap: every
     # carriage-return segment stays within the measured width, so the

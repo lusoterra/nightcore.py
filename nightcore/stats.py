@@ -48,7 +48,7 @@ def _progress_tick(done, total, name, last_len):
     """
     if util._quiet >= 2 or not sys.stderr.isatty():
         return 0
-    prefix = f"Stats [{done}/{total}] "
+    prefix = f"Stats [{done:0{len(str(total))}d}/{total}] "
     width = _term_width()
     room = max(10, width - len(prefix))
     shown = " ".join(str(name).split())
