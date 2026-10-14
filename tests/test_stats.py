@@ -98,17 +98,21 @@ def test_stats_cli_errors(monkeypatch, capsys, tmp_path):
     empty.mkdir()
     rc, _, _ = _run(monkeypatch, capsys, ["--stats", str(empty)])
     assert rc == 1
-    _require_tools("ffmpeg")
+
+
+def test_stats_ignores_other_flags(monkeypatch, capsys, tmp_path):
+    # Read-only report: conversion/mode flags are harmless passengers
+    # (shell functions carrying automation flags keep working).
+    _require_tools("ffmpeg", "ffprobe")
     _sine_flac(tmp_path / "a.flac")
-    rc, _, _ = _run(monkeypatch, capsys,
-                     ["--stats", str(tmp_path), str(tmp_path / "a.flac")])
-    assert rc == 1
-    rc, _, _ = _run(monkeypatch, capsys,
-                     ["--stats", str(tmp_path), "--batch", str(tmp_path)])
-    assert rc == 1
-    rc, _, _ = _run(monkeypatch, capsys,
-                     ["--stats", str(tmp_path), "-s", "1.2"])
-    assert rc == 1
+    tmpl = tmp_path / "t.tmpl"
+    tmpl.write_text('artist="A"\n', encoding="utf-8")
+    rc, out, _ = _run(monkeypatch, capsys,
+                       ["--stats", str(tmp_path), str(tmp_path / "a.flac"),
+                        "--batch", str(tmp_path), "-s", "1.2",
+                        "--tag-template", str(tmpl)])
+    assert rc == 0
+    assert "1 audio file(s)" in out
 
 
 def test_stats_ignores_corrupt_file(monkeypatch, capsys, tmp_path):
