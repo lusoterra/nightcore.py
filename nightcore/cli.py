@@ -78,10 +78,10 @@ def parse_arguments():
 
     parser.add_argument(
         "-F", "--format",
-        choices=sorted(OUTPUT_FORMATS),
         default="flac",
         metavar="FMT",
-        help="Output format: flac (default), alac, mp3, opus, aac"
+        help="Output format: flac (default), alac, mp3, opus, aac;\n"
+             "with --mkvid: mkv (default) or mp4 (the video container)"
     )
 
     parser.add_argument(
@@ -273,6 +273,19 @@ def parse_arguments():
         default=None,
         metavar="IMG",
         help="PNG/JPG artwork: sole attached picture of outputs."
+    )
+
+    parser.add_argument(
+        "--mkvid",
+        action="store_true",
+        default=False,
+        help="Remux one song (+ optional .lrc lyrics, + image) into a\n"
+        "1080p YouTube video: the image is letterboxed/pillarboxed into\n"
+        "1920x1080 with black bars (never stretched) and the audio rides\n"
+        "losslessly -- FLAC in mkv, ALAC in mp4 -- so YouTube's Opus\n"
+        "transcode is one generation of loss. -F picks mkv (default)\n"
+        "or mp4. No image and no embedded cover art is a loud error;\n"
+        "no audio processing flags apply (it is a remux, not a conversion)."
     )
 
     parser.add_argument(
@@ -560,6 +573,18 @@ def main():
             file=sys.stderr,
         )
         return 127
+
+    if args.mkvid:
+        from .mkvid import run_mkvid
+        return run_mkvid(args)
+
+    if args.format not in OUTPUT_FORMATS:
+        print(
+            f"Error: unknown output format {args.format!r} "
+            "(flac, alac, mp3, opus, aac; mkv/mp4 require --mkvid)",
+            file=sys.stderr,
+        )
+        return 1
 
     # -S alone (or with -p) is pitch-only; -s + -S together is one
     # combined speedup-then-pitch job: bit-perfect asetrate first, then

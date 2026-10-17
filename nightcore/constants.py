@@ -187,6 +187,23 @@ COVER_FORMATS = (".flac", ".m4a", ".mp3", ".opus")
 _TAG_ALIASES = {"albumartist": "album_artist"}
 
 
+# --mkvid: still-image YouTube video remuxes. The picture is letterboxed
+# / pillarboxed into 1080p with black bars (never stretched) and the audio
+# rides losslessly (FLAC in mkv, ALAC in mp4), so YouTube's Opus
+# transcode is exactly one generation of loss. No resampling: mkv/mp4 +
+# FLAC/ALAC accept any sample rate, so the source rate passes through.
+MKVID_FORMATS = {
+    "mkv": {"ext": ".mkv", "audio_codec": "flac", "subtitle_codec": "srt"},
+    "mp4": {"ext": ".mp4", "audio_codec": "alac", "subtitle_codec": "mov_text"},
+}
+MKVID_DEFAULT = "mkv"
+MKVID_WIDTH = 1920
+MKVID_HEIGHT = 1080
+MKVID_PRESET = "veryfast"
+MKVID_TUNE = "stillimage"
+MKVID_CRF = "18"
+
+
 # Cover-art filenames (case-insensitive stem + image suffix) copied
 # alongside batch outputs so archived folders stay complete.
 COVER_ART_NAMES = {"cover", "folder", "front", "albumart", "artwork"}

@@ -25,6 +25,15 @@ of Nightcore. You can, of course, slow down music with it as well.
 - Share-friendly lossy encodes (-F mp3/opus/aac) - you pick the quality, the script picks the best encoder available
 - Convert whole folders with --batch: reruns skip finished files, -y redo them all
 - Retime `.lrc` lyrics to match sped-up audio; they land next to the music with the same name
+- `--mkvid`: remux one song (+ optional `.lrc` lyrics, + image) into a
+  1080p YouTube video. The image is letterboxed/pillarboxed into 1920x1080
+  with black bars (never stretched) and the audio rides losslessly -- FLAC
+  in mkv, ALAC in mp4 -- so YouTube's Opus transcode is one generation of
+  loss; no resampling happens. `-F mkv` (default) or `-F mp4`. Without
+  `--cover` the song's embedded cover art is used; no image at all fails
+  loudly. `.lrc` lyrics are embedded as a subtitle track, and all audio
+  tags (title, artist, album, date, genre ...) carry over. No audio
+  processing flags apply (it is a remux, not a conversion).
 - Frequency calculators built in: --pitch-diff and --speed-diff turn measured peaks into exact semitones
 - Filenames mirror titles: `Artist - Title [Nightcore 2.17st].flac` (rounded shift, no quality clutter — that lives in the pipeline tag; `[rate]` stays when resampling, `[denightcored BP/NBP]` on undos; customize on the fly with --autorename), titles carry just `Title [Nightcore 2.17st]` by default (rounded to 2 decimals), and `title=`/`artist=` lines in the tag template accept bare `{title}`/`{diff}`/`{quality}`/`{resample}`/`{denightcore}` slots (`{diff(2)}` rounds for display) — an explicit `title=` is used verbatim. Artist and all other source tags ride through untouched by default
 - Undo anything with -D (pipeline-trusted, filenames aren't): names rebuild as `Artist - Title [quality] [denightcored BP/NBP]`, the pipeline records the undo so double-undos refuse, and pure-speedup cycles are bit-exact

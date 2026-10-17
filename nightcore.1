@@ -182,6 +182,25 @@ without a template keep the encoder's own tags instead).
 PNG/JPG artwork to use as the sole attached picture of outputs
 (opus pictures go via opusenc).
 .TP
+.B --mkvid
+Remux one song (plus one optional \fI.lrc\frc lyric and an image) into a
+1080p YouTube video: no audio processing, just a remux. The image is
+letterboxed/pillarboxed into 1920x1080 with black bars (never stretched)
+and sits under a \fClibx264\fR (\fIpreset veryfast, tune stillimage,
+crf 18\fR) still picture. The audio rides losslessly -- FLAC in \fBmkv\fR,
+ALAC in \fBmp4\fR -- so YouTube's Opus transcode is exactly one
+generation of loss; no resampling happens (mkv/mp4 + FLAC/ALAC accept
+any sample rate). \fB-F\fR picks \fBmkv\fR (default) or \fBmp4\fR.
+Without \fB--cover\fR the song's embedded cover art is used; a song with
+no image and no \fB--cover\fR fails loudly. \fI.lrc\fR lyrics are
+converted to SubRip and embedded as a subtitle track (\fBsrt\fR in mkv,
+\fBmov_text\fR in mp4). All audio tags (title, artist, album, date,
+genre ...) are carried into the video, ready for YouTube. Audio
+processing flags (\fB-s\fR, \fB-S\fR, \fB-p\fR, \fB-r\fR, \fB-R\fR,
+\fB-D\fR), \fB--batch\fR, \fB--renametag\fR and \fB--in-place\fR are
+refused; \fB--quiet\fR, \fB--autorename\fR and \fB--tag-template\fR are
+silently ignored.
+.TP
 .B --version
 Print version and exit.
 .TP
