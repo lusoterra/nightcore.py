@@ -13,6 +13,7 @@ remux, not a conversion.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -35,13 +36,44 @@ from .constants import (
 )
 from .naming import single_parent
 from .tags import read_tags, sanitize_filename, tool_stamp
-from .util import run_tool, say
+from .util import _quiet, run_tool, say
 
 # LRC timestamp: [mm:ss.cc] with optional [mm:ss.ccc]; the rest of the
 # line is the lyric text. Metadata headers ([ar:], [ti:] ...) never match
 # because they have a letter right after the colon... actually they don't
 # -- this pattern requires digits before the colon, so headers are safe.
 _LRC_LINE = re.compile(r"^\[(\d+):(\d{2})(?:[.:](\d{1,3}))?\](.*)$")
+
+
+def _term_width():
+    """Columns of the stderr terminal (80 fallback).
+
+    Measured on stderr itself: that is where the log line draws, and
+    stdout may be wider, narrower, or redirected. Same approach as the
+    stats progress tick, so narrow or redirected terminals never wrap.
+    """
+    try:
+        width = os.get_terminal_size(sys.stderr.fileno()).columns
+        if width >= 20:
+            return width
+    except (OSError, AttributeError, ValueError):
+        pass
+    try:
+        return max(20, shutil.get_terminal_size().columns)
+    except OSError:
+        return 80
+
+
+def _abbrev(name, width=None):
+    """Collapse whitespace and tail-truncate a path/name to fit `width`
+    (stderr columns, default), keeping the tail (suffixes tell files
+    apart)."""
+    if width is None:
+        width = _term_width()
+    shown = " ".join(str(name).split())
+    if len(shown) > width:
+        shown = "..." + shown[-(width - 3):] if width > 3 else "..."
+    return shown
 
 
 def _lrc_frac_to_ms(frac):
@@ -235,9 +267,19 @@ def run_mkvid(args):
 
         if args.dry_run:
             extra = " and lyrics embedded" if lrc_path is not None else ""
-            say(f"{output_path.name}: would mux {song.name} "
-                f"with {image.name} into {fmt} ({audio_codec} audio, "
-                f"1080p letterboxed{extra})")
+            width = _term_width()
+            head = ": would mux "
+            mid = " with "
+            tail = f" into {fmt} ({audio_codec} audio, 1080p h264{extra})"
+            fixed = len(head) + len(mid) + len(tail)
+            room = max(30, width - fixed)
+            share = max(10, room // 3)
+            line = (
+                f"{_abbrev(output_path.name, share)}{head}"
+                f"{_abbrev(song.name, share)}{mid}"
+                f"{_abbrev(image.name, share)}{tail}"
+            )
+            say(line[:width])
             return 0
 
         # --- lyrics: .lrc -> .srt, embedded as a subtitle track -----
@@ -302,10 +344,24 @@ def run_mkvid(args):
             ]
         cmd += [str(output_path)]
 
-        say(f"{output_path.name}: muxing {song.name} -> {fmt} "
-            f"({audio_codec} audio, 1080p no stretch)")
+        width = _term_width()
+        suffix = f" -> {fmt} ({audio_codec} audio, 1080p h264)"
+        glue = ": muxing "
+        room = max(10, width - len(glue) - len(suffix))
+        # Split the remaining room between the two names, tail-truncated
+        # like --stats, so long file names never wrap the line.
+        song_room = max(10, room * 2 // 3)
+        out_room = max(10, room - song_room)
+        line = (
+            f"{_abbrev(output_path.name, out_room)}{glue}"
+            f"{_abbrev(song.name, song_room)}{suffix}"
+        )
+        say(line[:width])
+        say("  ffmpeg remux")
         run_tool(cmd)
         say(f"  done: {output_path}")
+        if _quiet < 2:
+            print(f"Summary: 1 converted -> {output_path}")
         return 0
 
     except subprocess.CalledProcessError as e:
