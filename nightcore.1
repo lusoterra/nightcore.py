@@ -92,12 +92,13 @@ Print output filename(s), convert nothing.
 .TP
 .B --autorename \fR[\fITEMPLATE\fR]
 Rename output via a filename-stem template with bare \fI{artist} {title}
-{diff} {quality} {resample} {denightcore}\fR slots, e.g.
-\fI--autorename="{artist} - {title} [{diff}]"\fR. Bare
+{diff} {quality} {resample} {denightcore}\fR slots. Default is
+\fI"{artist} - {title} [Nightcore {diff}] [{quality}] [{resample}]
+[{denightcore}]"\fR (empty slots drop their brackets; lossy outputs
+drop quality/rate). Bare
 \fI--autorename\fR keeps the legacy \fIArtist - Title [tags]\fR (base
 cleaned of script groups, suffix recovered from filename tags under
-\fI-N\fR, so re-runs are idempotent); default
-keeps the input filename and appends params. A bare flag goes last or
+\fI-N\fR, so re-runs are idempotent). A bare flag goes last or
 uses \fI=\fR, else it eats the input filename as its template.
 .TP
 .B -o, --output \fIFILE\fR
@@ -126,8 +127,8 @@ moves alongside the inputs instead (asks \fI[y/N]\fR first),
 \fI-o\fR names the copy verbatim.
 Same-stem .lrc lyrics follow their audio master (renamed or copied
 alongside it); batch .lrc entries are skipped as sidecar-driven.
-Names come from \fI--autorename\fR (Artist - Title) or the input stem,
-with no conversion params appended. Speed/pitch/resample flags
+Names come from \fI--autorename\fR (default template) with no
+conversion params appended beyond its slots. Speed/pitch/resample flags
 (\fI-s -S -p -r -R -D\fR) are errors; a same-name
 rewrite goes through a temp file plus atomic replace. Opus pictures
 cannot be preserved without re-encoding, so those fail loudly.
@@ -278,10 +279,11 @@ instead). Pre-magic files gain the marker through a \fI-N\fR round
 (old \fISettings:\fR lines migrate too); files with only filename
 tags need \fI-s/-r\fR manually if no record exists at all, and WAV
 inputs carry no readable tags, so they can never be undone from tags.
-Names rebuild from tags as \fIArtist - Title [denightcore
-BP]\fR or \fI[denightcored NBP]\fR (plus a resample tag when resampling
+Names rebuild from tags through the \fI--autorename\fR template
+(denightcore verdict via \fI{denightcore}\fR, restored quality via
+\fI{quality}\fR, plus a resample tag when resampling
 now; artist prefix omitted without an
-artist tag); a custom \fI--autorename\fR template is honored instead.
+artist tag).
 \fI--tag-template\fR is ignored (restoring, not curating). The output
 stamp records the undo, so a second \fI-D\fR on it refuses (nothing left
 to invert). Output must be lossless: lossy \fI-F\fR is rejected, so tracks

@@ -167,15 +167,16 @@ def parse_arguments():
         type=str,
         nargs="?",
         const="",
-        default=None,
+        default="{artist} - {title} [Nightcore {diff}] [{quality}] [{resample}] [{denightcore}]",
         metavar="TEMPLATE",
         help="Rename output via a filename-stem template with bare\n"
              "{artist} {title} {diff} {quality} {resample} {denightcore}\n"
              "slots (bare flag keeps legacy 'Artist - Title [tags]';\n"
              "quality never rides fresh names, pipeline keeps it;\n"
-             "default keeps the input filename, appends params;\n"
-             "denightcore outputs default to\n"
-             "'Artist - Title [denightcored BP/NBP]';\n"
+             "default is '{artist} - {title} [Nightcore {diff}]\n"
+             "[{quality}] [{resample}] [{denightcore}]' (empty slots\n"
+             "drop their brackets; lossy outputs drop quality/rate);\n"
+             "denightcore renders its verdict via {denightcore};\n"
              "bare flag goes last, or use --autorename=)"
     )
 
@@ -880,6 +881,16 @@ def main():
                    else batch_op_dir(args, "renametag"))
         if op_base is not None and not args.dry_run:
             op_base.mkdir(parents=True, exist_ok=True)
+        lyrics = [f for f in inputs if f.suffix.lower() == ".lrc"]
+        if lyrics:
+            print(f"Skipping {len(lyrics)} lyrics file(s) "
+                  "(they follow their audio masters as sidecars)",
+                  file=sys.stderr)
+            ctx["skipped"] = ctx.get("skipped", 0) + len(lyrics)
+            inputs = [f for f in inputs if f.suffix.lower() != ".lrc"]
+            if not inputs:
+                print("Error: no audio files to renametag", file=sys.stderr)
+                return 1
         ctx["batch_total"] = len(inputs)
         failed = []
         for bi, candidate in enumerate(inputs):

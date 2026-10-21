@@ -8,11 +8,11 @@ import subprocess
 import sys
 import tempfile
 
-from .audio import cover_codec_name, extract_cover_tmp, format_rate, get_audio_info, get_sample_rate
+from .audio import cover_codec_name, extract_cover_tmp, format_rate, get_audio_info, get_sample_rate, mp3_header_info, packet_vbr_info
 from .backends import flac_postprocess, missing_metaflac, run_ffmpeg, tool_version
-from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, PIPELINE_TAG, STAMP_TAG, _IMAGE_MIME
-from .naming import claim_output_path, recover_filename_quality, single_parent, split_shift_tags, strip_empty_display_tags, strip_quality_rate_tags
-from .tags import apply_template_tags, augment_pipeline_tools, autorename_base, backfill_stamp_settings, compute_new_title, describe_output_tags, display_suffix, ensure_pipeline_magic, flac_comment_wants, fold_album_artist, format_diff_label, get_artist, get_title, pipeline_origin, read_format_tag, read_shift_source, render_autorename, sanitize_filename, tool_stamp
+from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, OUTPUT_FORMATS, PIPELINE_TAG, STAMP_TAG, _IMAGE_MIME
+from .naming import claim_output_path, lossy_suffix_for, recover_filename_quality, single_parent, split_shift_tags, strip_empty_display_tags, strip_quality_rate_tags
+from .tags import apply_template_tags, augment_pipeline_tools, autorename_base, backfill_stamp_settings, clean_encoder, compute_new_title, describe_output_tags, display_suffix, ensure_pipeline_magic, flac_comment_wants, fold_album_artist, format_diff_label, get_artist, get_title, pipeline_origin, read_format_tag, read_shift_source, render_autorename, sanitize_filename, tool_stamp
 from .util import _active_outputs, batch_prefix, preview_output, say
 
 def run_renametag(args, input_path, out_dir, ctx):
@@ -78,13 +78,85 @@ def run_renametag(args, input_path, out_dir, ctx):
     # probes as flac). Used for the pipeline origin check below and the
     # canonical -N filename suffix.
     _forge = recover_filename_quality(stem)
+    # Restored source quality for {quality}/{resample} slots (filenames
+    # and tag-template titles): the probe sees the sped-up rate, so the
+    # original rate is recovered via the pipeline shift. Origin prefers
+    # the pipeline record (all files carry encoder_settings), then the
+    # filename groups, then the probe with the restored rate.
+    from .audio import speed_from_semitones as _sfs
+    _info_q = get_audio_info(input_path)
+    _qcodec, _qbitrate, _qbits = _info_q[0], _info_q[1], _info_q[2]
+    _sr_now = get_sample_rate(input_path)
+    try:
+        _restored = (round(_sr_now / _r_speed / _sfs(_r_st))
+                     if _sr_now else None)
+    except (ValueError, ZeroDivisionError, OverflowError):
+        _restored = _sr_now
+    _origin = pipeline_origin(existing_pipe or "")
+    _oc = (_origin.get("codec") or "")
+    if _oc and _oc.lower().replace("-", "_") in LOSSY_CODECS:
+        _qb_full = " ".join(p for p in (
+            _oc.replace("_", "-"),
+            _origin.get("mode") or "",
+            _origin.get("bitrate") or "",
+            _origin.get("encoder") or "") if p)
+    elif _forge["codec"] is not None:
+        _parts = [_forge["codec"].replace("_", "-")]
+        if _forge["mode"]:
+            _parts.append(_forge["mode"])
+        if _forge["bitrate_kbps"]:
+            _parts.append(f"{_forge['bitrate_kbps']}k")
+        if _forge["encoder"]:
+            _parts.append(_forge["encoder"])
+        _qb_full = " ".join(_parts)
+    elif _origin.get("depth") is not None:
+        _orate = _origin.get("rate") or _restored
+        _qb_full = (f"{_origin['depth']}bit {format_rate(_orate)}"
+                    if _orate else f"{_origin['depth']}bit")
+    elif _forge["depth"] is not None:
+        _frate = _forge["rate_hz"] or _restored
+        _qb_full = (f"{_forge['depth']}bit {format_rate(_frate)}"
+                    if _frate else f"{_forge['depth']}bit")
+    else:
+        _qmode, _qenc = None, clean_encoder(_info_q[4], _qcodec)
+        if _qcodec == "mp3":
+            _qmode, _lame = mp3_header_info(input_path)
+            _qenc = _lame or _qenc
+            if _qmode == "VBR" and _info_q[3]:
+                _qbitrate = _info_q[3]
+        elif _qcodec in ("aac", "opus"):
+            _qmode = packet_vbr_info(input_path)
+        _lossy_probe = lossy_suffix_for(_qcodec, _qbitrate, _qmode, _qenc)
+        if _lossy_probe:
+            _qb_full = _lossy_probe[2:-1]
+        elif _qbits and _restored:
+            _qb_full = f"{_qbits}bit {format_rate(_restored)}"
+        elif _restored:
+            _qb_full = f"{format_rate(_restored)}"
+        else:
+            _qb_full = ""
+    if _forge["resample_hz"] is not None:
+        _rb_full = format_rate(_forge["resample_hz"])
+    else:
+        import re as _re
+        _m = _re.search(r"(?:^|\s)resample=(\d+)Hz",
+                        existing_pipe or "")
+        _rb_full = format_rate(int(_m.group(1))) if _m else ""
+    # Lossy outputs carry only the shift amount (same rule as
+    # conversions): [{quality}]/[{resample}] vanish. -N keeps the
+    # container (-F ignored), so either a lossy source or a lossy -F
+    # strips them; {diff} stays.
+    _out_lossy = bool(OUTPUT_FORMATS.get(
+        getattr(args, "format", "flac"), {}).get("lossy"))
+    if _qcodec in LOSSY_CODECS or _out_lossy:
+        _qb_full, _rb_full = "", ""
     if tmpl is not None:
         (title_base, ff_extra, stub_encoder, artist,
          original_title, title_verbatim) = apply_template_tags(
              tmpl, input_path, original_title, artist,
              keep_missing=args.no_delete_tags,
-             slots={"diff": recovered_diff, "quality": "",
-                    "resample": "", "denightcore": ""})
+             slots={"diff": recovered_diff, "quality": _qb_full,
+                    "resample": _rb_full, "denightcore": ""})
         if out_ext != ".m4a":
             # Canonical albumartist everywhere except movenc, which drops
             # the bare spelling (hence the alias above).
@@ -168,7 +240,13 @@ def run_renametag(args, input_path, out_dir, ctx):
             drop_rate=_forge["resample_hz"] is not None)
         name_base = _rendered + _suffix
     else:
-        name_base = render_autorename(args, artist, original_title, stem)
+        # Custom TEMPLATE: same restored slots as above, so explicit
+        # [{diff}]/[{quality}]/[{resample}] render instead of vanishing.
+        # Bare mode stays quality-free by design (pipeline keeps it);
+        # custom honors an explicit {quality} request.
+        name_base = render_autorename(args, artist, original_title, stem,
+                                      diff=recovered_diff, quality=_qb_full,
+                                      resample=_rb_full)
     parent = (out_dir if out_dir is not None
               else (input_path.parent
                     if getattr(args, "in_place", False)
