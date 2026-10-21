@@ -1,4 +1,6 @@
 #compdef nightcore
+# Install: copy to a directory on your $fpath as _nightcore
+# (e.g. ~/.zsh/completions/_nightcore).
 
 _nightcore() {
     local context state line
@@ -12,9 +14,9 @@ _nightcore() {
         '--reciprocal[Use reciprocal of speed (1.2 becomes 1\/1.2)]' \
         '-R[Resample output to the next higher standard sample rate]' \
         '--resample[Resample output to the next higher standard sample rate]' \
-        '-F+[Output format]:format:(flac alac mp3 opus aac)' \
-        '--format+[Output format]:format:(flac alac mp3 opus aac)' \
-        '--lossy-opts-[Extra lossy encoder flags (use --opt="...")]: : ' \
+        '-F+[Output format (mkv/mp4 need --mkvid)]:format:(flac alac mp3 opus aac mkv mp4)' \
+        '--format+[Output format (mkv/mp4 need --mkvid)]:format:(flac alac mp3 opus aac mkv mp4)' \
+        '--lossy-opts=[Extra lossy encoder flags (equals form only)]: : ' \
         '--batch+[Convert directory to .\/encodes\/format]:dir:_files -\/' \
         '--stats+[Print folder statistics]:dir:_files -/' \
         '--recurse+[Recurse subdirectories for --stats]:depth:(2 3)' \
@@ -32,14 +34,15 @@ _nightcore() {
         '-N[Retag mode: rewrite tags and rename in place]' \
         '--renametag[Retag mode: rewrite tags and rename]' \
         '--in-place[With -N batch: renametag alongside inputs]' \
-        '-o+[Override the output filename]: :' \
-        '--output+[Override the output filename]: :' \
+        '-o+[Override the output filename]:output file:_files' \
+        '--output+[Override the output filename]:output file:_files' \
         '--output-folder+[Base directory for batch folders]:dir:_files -/' \
         '--no-delete-tags[With template: keep unlisted source tags]' \
         '--no-stamp[Skip the DESCRIPTION provenance stamp]' \
         '--no-pipeline[Skip the encoder_settings pipeline tag]' \
         '--tag-template+[Tag template file]:template:_files' \
         '--cover+[Cover artwork PNG/JPG]:image:_files -g "*.png *.jpg *.jpeg (#i)"' \
+        '--mkvid[Remux song (+lyrics/image) into a 1080p YouTube video]' \
         '--version[Print version and exit]' \
         '--check[Check external tools and exit]' \
         '-y[Overwrite output file if it exists]' \

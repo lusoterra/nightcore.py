@@ -64,6 +64,7 @@ Section "install" SEC_INSTALL
     DetailPrint "Installed. Type nightcore --version in a NEW terminal."
     DetailPrint "Run nightcore --check to see the bundled toolset."
     DetailPrint "For qaac: copy YOUR Apple DLLs (CoreAudioToolbox.dll, CoreFoundation.dll, icudt*.dll, libdispatch.dll, libicuin*.dll, libicuuc*.dll, objc.dll) into $INSTDIR\tools and run nightcore --check."
+    DetailPrint "PowerShell completions: $INSTDIR\completions\nightcore.ps1 (dot-source it from your profile)."
 SectionEnd
 
 Section "Add install folder to machine PATH" SEC_PATH

@@ -1,28 +1,27 @@
 #!/usr/bin/env bash
-# build.sh — all-in-one Linux builder for nightcore Windows outputs.
+# build.sh — all-in-one Linux builder for the nightcore Windows setup.
 #   1. resolves app source from Gitea (or $NIGHTCORE_SRC) into build/
 #   2. fetches Windows tools into tools/ (cached in cache/ after first run)
 #   3. assembles the portable tree in build/portable/
 #   4. builds the NSIS setup exe(s) into dist/
-#   5. builds the PyInstaller bundle exe(s) under Wine into dist/
 #
 # Usage:
-#   ./build.sh                                      # portable + setup + bundle (shareable-safe)
+#   ./build.sh                                      # portable + setup (shareable-safe)
 #   ./build.sh --fetch-only                         # only fill tools/ + cache/, then stop
 #   ./build.sh --no-download                        # stage from cache/tools only, no network
-#   ./build.sh --skip-setup | --skip-bundle         # only one installer type
 #   ./build.sh --portable-only                      # stop after build/portable
-#   ./build.sh --with-qaac | --full | --build-all   # qaac variants (setup + bundle)
+#   ./build.sh --with-qaac | --full | --build-all   # qaac variants (setup)
 #   ./build.sh --no-upx                             # skip UPX packing (exes may exceed 100MB)
 #
-# Qaac modes (apply to setup + bundle):
-#   (default)   no qaac / Apple DLLs, even if staged   (-setup.exe / -bundle.exe)
+# Qaac modes (apply to setup):
+#   (default)   no qaac / Apple DLLs, even if staged   (-setup.exe)
 #   --with-qaac + qaac.exe, NO Apple DLLs              (-setup-qaac.exe, drag-drop yours)
 #   --full      + qaac + your Apple DLLs (personal)    (-setup-full.exe, do not share)
 #   --build-all all three
 #
-# Nothing is ever deleted for you: if an output dir already exists the
-# script stops and tells you the exact `rm -rf` to run yourself.
+# Stale build outputs (build/portable, build/payload-*, build/upstream-*)
+# are removed automatically on the way through. cache/ and tools/ are
+# never touched, and nothing outside build/ is ever deleted.
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$PWD"
@@ -38,12 +37,10 @@ UPSTREAM_REPO="https://git.lusosterone.net/lev/nightcore.py"
 # derived locations/specs — override the _URL vars in versions.env
 # (or the environment) to point at mirrors.
 # Windows target is fixed x86_64 (amd64 artifacts, x86_64 dist names).
-# Both embed zips (portable tree + Wine build env) are headless-safe;
-# the Burn installer .exe is deliberately not used (it fails with
-# "Failed to create window", exit 0x582, when no display server runs).
+# Both python embed zips are headless-safe; the Burn installer .exe is
+# deliberately not used (it fails with "Failed to create window",
+# exit 0x582, when no display server runs).
 PY_EMBED_URL="https://www.python.org/ftp/python/${PY_VER}/python-${PY_VER}-embed-amd64.zip"
-WINE_PY_EMBED_URL="https://www.python.org/ftp/python/${WINE_PY_VER}/python-${WINE_PY_VER}-embed-amd64.zip"
-GETPIP_URL="${GETPIP_URL:-https://bootstrap.pypa.io/get-pip.py}"
 # NSIS .debs run on THIS (Linux host) machine, not the Windows target.
 NSIS_HOST_ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
 if [ -z "$NSIS_HOST_ARCH" ]; then
@@ -61,7 +58,6 @@ OPUS_FALLBACK_URL="${OPUS_FALLBACK_URL:-https://www.rarewares.org/files/opus/${O
 FLAC_URL="${FLAC_URL:-https://www.rarewares.org/files/lossless/flac-${FLAC_VER}-x64.zip}"
 VORBIS_URL="${VORBIS_URL:-http://www.rarewares.org/files/ogg/vorbiscomment-${VORBIS_VER}.zip}"
 if [ -n "$MUTAGEN_VER" ]; then MUTAGEN_SPEC="mutagen==$MUTAGEN_VER"; else MUTAGEN_SPEC="mutagen"; fi
-if [ -n "$PYINSTALLER_VER" ]; then PYINSTALLER_SPEC="pyinstaller==$PYINSTALLER_VER"; else PYINSTALLER_SPEC="pyinstaller"; fi
 
 # fix: these must exist BEFORE any curl -o cache/... or tar -xzf
 # (the old split scripts sourced lib-upstream.sh before mkdir, so the
@@ -69,13 +65,30 @@ if [ -n "$PYINSTALLER_VER" ]; then PYINSTALLER_SPEC="pyinstaller==$PYINSTALLER_V
 # No such file or directory`).
 mkdir -p "$STAGE" "$CACHE" build dist
 
-FETCH_ONLY=0; NO_DOWNLOAD=0; SKIP_SETUP=0; SKIP_BUNDLE=0; PORTABLE_ONLY=0
+# Guard for the auto-removes below: every target must live inside the
+# script's own build/ tree, and we must still be standing in the
+# script's directory. Missing paths are fine (fresh start); anything
+# else aborts instead of deleting.
+wipe_build() { # wipe_build RELPATH...
+    [ "$PWD" = "$ROOT" ] || {
+        echo "refusing to delete: expected to be in $ROOT (in $PWD)" >&2
+        exit 1
+    }
+    local d
+    for d in "$@"; do
+        [ -e "$d" ] || continue
+        case "$d" in
+            build/*) rm -rf "$ROOT/$d";;
+            *) echo "refusing to delete outside build/: $d" >&2; exit 1;;
+        esac
+    done
+}
+
+FETCH_ONLY=0; NO_DOWNLOAD=0; PORTABLE_ONLY=0
 WITH_QAAC=0; FULL=0; BUILD_ALL=0; NO_UPX=0
 for a in "$@"; do case "$a" in
     --fetch-only) FETCH_ONLY=1;;
     --no-download) NO_DOWNLOAD=1;;
-    --skip-setup) SKIP_SETUP=1;;
-    --skip-bundle) SKIP_BUNDLE=1;;
     --portable-only) PORTABLE_ONLY=1;;
     --no-upx) NO_UPX=1;;
     --with-qaac) WITH_QAAC=1;;
@@ -86,7 +99,6 @@ esac; done
 if [ "$WITH_QAAC" -eq 1 ] && [ "$FULL" -eq 1 ]; then
     echo "pick one of --with-qaac or --full (or --build-all)" >&2; exit 2
 fi
-if [ "$PORTABLE_ONLY" -eq 1 ]; then SKIP_SETUP=1; SKIP_BUNDLE=1; fi
 
 # ---- upstream: app source (sets SRC) ----
 resolve_upstream() {
@@ -112,12 +124,9 @@ resolve_upstream() {
         fi
         SRC="build/upstream-$UP_TAG"
         if [ ! -d "$SRC/nightcore" ]; then
-            if ls -d build/upstream-* >/dev/null 2>&1; then
-                echo "refusing to overwrite existing build/upstream-* (wanted $SRC)" >&2
-                echo "delete it yourself first:" >&2
-                echo "  rm -rf \"$ROOT/build/upstream-\"*" >&2
-                exit 1
-            fi
+            # Stale extracts go (tarballs stay cached, so this is cheap);
+            # a NIGHTCORE_SRC path above is never touched.
+            wipe_build build/upstream-*
             mkdir -p "$SRC"
             tar -xzf "$UP_TARBALL" -C "$SRC" --strip-components=1
         fi
@@ -193,12 +202,6 @@ fetch_tools() {
     # (dl skips present files, so the portable tree kept the old python).
     dl "$PY_EMBED_URL" \
         "$CACHE/python-embed-$PY_VER.zip"
-    if [ "$WINE_PY_VER" != "$PY_VER" ]; then
-        dl "$WINE_PY_EMBED_URL" \
-            "$CACHE/python-embed-$WINE_PY_VER.zip"
-    fi
-    dl "$GETPIP_URL" \
-        "$CACHE/get-pip.py" || echo "!! get-pip fetch failed (bundle needs it)"
     dl "$FFMPEG_URL" \
         "$CACHE/ffmpeg.zip" || echo "!! ffmpeg fetch failed (drop ffmpeg.exe/ffprobe.exe in $STAGE/)"
     dl "$SOX_URL" \
@@ -239,12 +242,7 @@ fetch_tools() {
 
 assemble_portable() {
     echo "== assemble $PORTABLE =="
-    if [ -e "$PORTABLE" ]; then
-        echo "refusing to overwrite existing $PORTABLE" >&2
-        echo "delete it yourself first:" >&2
-        echo "  rm -rf \"$ROOT/$PORTABLE\"" >&2
-        exit 1
-    fi
+    wipe_build "$PORTABLE"
     mkdir -p "$PORTABLE/python" "$PORTABLE/app" "$PORTABLE/tools"
 
     # 1. windows python embed
@@ -273,6 +271,11 @@ assemble_portable() {
     done
     cp -f nightcore.bat "$PORTABLE/"
     cp -f "$SRC/pyproject.toml" "$PORTABLE/app/pyproject.toml" 2>/dev/null || true
+    # Shell completions ride along (PowerShell is the live one on Windows;
+    # the rest are tiny and stay in sync for msys2/git-bash/WSL users).
+    # The NSIS setup copies the whole payload, so this ships there too.
+    mkdir -p "$PORTABLE/completions"
+    cp -f "$SRC/completions/"* "$PORTABLE/completions/" 2>/dev/null || true
 
     echo "--- staged contents ---"
     ls -la "$PORTABLE" "$PORTABLE/tools" | head -n 60
@@ -293,16 +296,12 @@ build_setup_one() { # build_setup_one MODE (default|qaac|full)
         full) tag="-full";;
         *) echo "bad setup mode: $mode" >&2; exit 2;;
     esac
-    # per-variant payload dir so --build-all never overwrites itself
+    # per-variant payload dir (--build-all never collides with itself);
+    # a stale one from a previous run goes first.
     if [ -z "$tag" ]; then payload="build/payload-setup";
     else payload="build/payload-setup$tag"; fi
+    wipe_build "$payload"
     echo "== setup payload ($mode) -> $payload =="
-    if [ -e "$payload" ]; then
-        echo "refusing to overwrite existing $payload" >&2
-        echo "delete it yourself first:" >&2
-        echo "  rm -rf \"$ROOT/$payload\"" >&2
-        exit 1
-    fi
 
     NSIS="cache/nsis"
     if [ ! -x "$NSIS/a/usr/bin/makensis" ]; then
@@ -363,151 +362,11 @@ build_setup_one() { # build_setup_one MODE (default|qaac|full)
     check_size "dist/nightcore-$VER-x86_64-setup$tag.exe"
 }
 
-build_bundle_one() { # build_bundle_one MODE (default|qaac|full)
-    local mode="$1" tag=""
-    case "$mode" in
-        default) tag="";;
-        qaac) tag="-qaac";;
-        full) tag="-full";;
-        *) echo "bad bundle mode: $mode" >&2; exit 2;;
-    esac
-    echo "== bundle ($mode) =="
-    export WINEDEBUG=-all
-    # NOTE: WINEPREFIX is an isolated mktemp dir (NOT ${WINEPREFIX}), because
-    # this shell pre-exports WINEPREFIX (default Wine prefix) and a
-    # ${WINEPREFIX:-...} default would silently use it. Never write to the
-    # default prefix (~/.wine, ~/.local/share/wine).
-    local prefix; prefix="$(mktemp -d -t nightcore-wine.XXXXXX)"
-    export WINEPREFIX="$prefix"
-    echo "wine prefix: $WINEPREFIX"
-    echo "cleanup when done: rm -rf \"$WINEPREFIX\""
-
-    find_wine_python() {
-        # embed python ships without the exec bit (zip); probe -f, not -x.
-        [ -f "$WINEPREFIX/drive_c/pybuild/python.exe" ] \
-            && echo "$WINEPREFIX/drive_c/pybuild/python.exe" || return 1
-    }
-    local pyexe=""
-    if ! pyexe="$(find_wine_python)"; then
-        # Headless-safe provisioning: the Burn installer .exe fails with
-        # "Failed to create window" (exit 0x582) when no display server
-        # runs, so stage the embeddable zip + get-pip instead
-        # (console-only). Forward slashes: Wine maps C:/... fine, while
-        # unix paths don't parse as Windows script args.
-        echo "== stage embed python $WINE_PY_VER in isolated prefix $WINEPREFIX =="
-        [ -s "$CACHE/python-embed-$WINE_PY_VER.zip" ] || { echo "!! $CACHE/python-embed-$WINE_PY_VER.zip missing (need network once)" >&2; exit 1; }
-        [ -s "$CACHE/get-pip.py" ] || { echo "!! $CACHE/get-pip.py missing (need network once)" >&2; exit 1; }
-        mkdir -p "$WINEPREFIX/drive_c/pybuild"
-        unzip -q -o "$CACHE/python-embed-$WINE_PY_VER.zip" -d "$WINEPREFIX/drive_c/pybuild"
-        # embed ships with site disabled; pip needs it.
-        # _pth name varies (python314._pth).
-        PTH="$(ls "$WINEPREFIX/drive_c/pybuild"/python*._pth | head -n 1)"
-        { grep -v "^#" "$PTH" || true; echo "import site"; } | awk '!seen[$0]++' > "$PTH.new"; mv "$PTH.new" "$PTH"
-        cp -f "$CACHE/get-pip.py" "$WINEPREFIX/drive_c/pybuild/get-pip.py"
-        pyexe="$WINEPREFIX/drive_c/pybuild/python.exe"
-        timeout 300 wine "$pyexe" "C:/pybuild/get-pip.py"
-        pyexe="$(find_wine_python)" || { echo "python staging failed" >&2; exit 1; }
-    fi
-    timeout 120 wine "$pyexe" --version
-
-    echo "== pip deps =="
-    timeout 300 wine "$pyexe" -m pip install --upgrade pip
-    timeout 600 wine "$pyexe" -m pip install "$PYINSTALLER_SPEC" "$MUTAGEN_SPEC"
-
-    echo "== stage inputs on C: =="
-    local b="$WINEPREFIX/drive_c/build"
-    if [ -e "$b" ]; then
-        echo "refusing to overwrite existing $b" >&2
-        echo "delete it yourself first:" >&2
-        echo "  rm -rf \"$b\"" >&2
-        exit 1
-    fi
-    mkdir -p "$b/src" "$b/tools"
-    cp -r "$SRC/nightcore" "$b/src/nightcore"
-    cp -f "$SRC/pyproject.toml" "$b/src/pyproject.toml"
-    cp -f rthook.py "$b/rthook.py"
-    cp -f entry-bundle.py "$b/entry-bundle.py"
-    # tools: everything staged, minus personal files unless flagged
-    cp -f tools/* "$b/tools/" 2>/dev/null || true
-    if [ -f "$b/tools/qaac64.exe" ]; then mv "$b/tools/qaac64.exe" "$b/tools/qaac.exe"; fi
-    if [ -f "$b/tools/refalac64.exe" ]; then mv "$b/tools/refalac64.exe" "$b/tools/refalac.exe"; fi
-    if [ "$mode" = full ]; then
-        echo "qaac + Apple DLLs included (personal bundle, do not redistribute)"
-    elif [ "$mode" = qaac ]; then
-        for d in $APPLE; do rm -f "$b/tools/$d"; done
-        echo "qaac included, Apple DLLs excluded (drop your own into tools\\)"
-    else
-        rm -f "$b/tools/qaac.exe" "$b/tools/refalac.exe"
-        for d in $APPLE; do rm -f "$b/tools/$d"; done
-        echo "qaac + Apple DLLs excluded (pass --with-qaac, or --full for personal)"
-    fi
-
-    # UPX the two giants with the HOST upx so the bundle stays under
-    # 100MB: PyInstaller runs as a Windows process under Wine, where the
-    # Linux upx binary is not executable, so spec upx= would be a no-op
-    # at best (qaac/Apple DLLs are never packed).
-    pack_exes "$b/tools/ffmpeg.exe" "$b/tools/ffprobe.exe"
-
-    echo "== verify staged inputs =="
-    ls -la "$b/src" | head -n 20
-    ls "$b/tools" | head -n 40
-    [ -f "$b/src/pyproject.toml" ] || { echo "staging failed: $b/src/pyproject.toml missing" >&2; exit 1; }
-    [ -d "$b/src/nightcore" ] || { echo "staging failed: $b/src/nightcore missing" >&2; exit 1; }
-
-    # install nightcore itself so importlib.metadata finds a version at runtime
-    # (frozen modules can't see pyproject.toml); spec collects the dist-info.
-    # NOTE: forward slashes — pip's requirement parser rejects backslash
-    # paths ("Invalid requirement: 'C:\\build\\src'"), forward slashes work.
-    timeout 300 wine "$pyexe" -m pip install "C:/build/src"
-
-    echo "== write spec (windows paths) =="
-    local binlist; binlist="$(ls "$b/tools" | sed 's/.*/\("C:\\\\build\\\\tools\\\\&", "tools"\),/' | tr '\n' ' ')"
-    # upx=False: tools above are already packed with the host upx.
-    cat > "$b/bundle.spec" <<EOF
-# -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import copy_metadata
-a = Analysis(
-    ["C:\\\\build\\\\entry-bundle.py"],
-    pathex=["C:\\\\build\\\\src"],
-    binaries=[ $binlist ],
-    datas=copy_metadata("nightcore"),
-    hiddenimports=["mutagen", "mutagen.mp4", "mutagen.mp3", "mutagen.id3",
-                   "mutagen.flac", "mutagen.oggopus", "mutagen.oggvorbis"],
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=["C:\\\\build\\\\rthook.py"],
-    excludes=[],
-    noarchive=False,
-)
-pyz = PYZ(a.pure)
-exe = EXE(
-    pyz, a.scripts, a.binaries, a.datas, [],
-    name="nightcore-bundle",
-    debug=False, bootloader_ignore_signals=False,
-    strip=False, upx=False, console=True,
-    disable_windowed_traceback=False, argv_emulation=False,
-)
-EOF
-
-    echo "== pyinstaller =="
-    mkdir -p dist
-    cd "$b"
-    timeout 1200 wine "$pyexe" -m PyInstaller --noconfirm --clean \
-        --distpath "C:\\build\\dist" --workpath "C:\\build\\work" bundle.spec
-    ls -la "$b/dist/"
-    cp -f "$b/dist/nightcore-bundle.exe" "$ROOT/dist/nightcore-$VER-x86_64-bundle$tag.exe"
-    cd "$ROOT"
-    ls -la "dist/nightcore-$VER-x86_64-bundle$tag.exe"
-    check_size "dist/nightcore-$VER-x86_64-bundle$tag.exe"
-    echo "wine prefix left at $WINEPREFIX — delete it yourself:" >&2
-    echo "  rm -rf \"$WINEPREFIX\"" >&2
-}
-
 # ---- main ----
 resolve_upstream
-echo "versions: arch=x86_64 nightcore=${NIGHTCORE_VERSION:-latest} py=$PY_VER wine-py=$WINE_PY_VER"
+echo "versions: arch=x86_64 nightcore=${NIGHTCORE_VERSION:-latest} py=$PY_VER"
 echo "versions: sox=$SOX_VER rubberband=$RUBBERBAND_VER lame=$LAME_VER opus=$OPUS_VER libopus=$LIBOPUS_VER"
-echo "versions: flac=$FLAC_VER vorbis=$VORBIS_VER mutagen=${MUTAGEN_VER:-latest} pyinstaller=${PYINSTALLER_VER:-latest} nsis=$NSIS_VER upx=$([ "$NO_UPX" -eq 1 ] && echo off || echo "$UPX_VER")"
+echo "versions: flac=$FLAC_VER vorbis=$VORBIS_VER mutagen=${MUTAGEN_VER:-latest} nsis=$NSIS_VER upx=$([ "$NO_UPX" -eq 1 ] && echo off || echo "$UPX_VER")"
 if [ "$NO_DOWNLOAD" -eq 0 ]; then
     fetch_tools
     fetch_upx
@@ -525,11 +384,8 @@ elif [ "$WITH_QAAC" -eq 1 ]; then MODES="qaac"
 elif [ "$FULL" -eq 1 ]; then MODES="full"
 fi
 
-if [ "$SKIP_SETUP" -eq 0 ]; then
+if [ "$PORTABLE_ONLY" -eq 0 ]; then
     [ -d build/portable/tools ] || { echo "portable tools missing" >&2; exit 1; }
     for m in $MODES; do build_setup_one "$m"; done
-fi
-if [ "$SKIP_BUNDLE" -eq 0 ]; then
-    for m in $MODES; do build_bundle_one "$m"; done
 fi
 echo "done. outputs in $ROOT/dist + $ROOT/build/portable"

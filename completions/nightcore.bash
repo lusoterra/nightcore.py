@@ -1,4 +1,6 @@
 # bash completion for nightcore
+# Install: copy to /usr/share/bash-completion/completions/nightcore
+# (or ~/.local/share/bash-completion/completions/nightcore).
 _nightcore() {
     local cur prev words cword
     _init_completion -n : 2>/dev/null || {
@@ -9,7 +11,7 @@ _nightcore() {
         cword=$COMP_CWORD
     }
 
-    local opts="-s --speed -r --reciprocal -y --overwrite -q --quiet -R --resample -F --format --lossy-opts= --batch -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run --autorename -N --renametag --in-place --no-delete-tags --no-stamp --no-pipeline -o --output --output-folder --tag-template --cover --version --check -h --help"
+    local opts="-s --speed -r --reciprocal -y --overwrite -q --quiet -R --resample -F --format --lossy-opts= --batch --stats --recurse -p --pitch -S --semitones --pitch-diff --speed-diff -D --denightcore -n --dry-run --autorename -N --renametag --in-place --no-delete-tags --no-stamp --no-pipeline -o --output --output-folder --tag-template --cover --mkvid --version --check -h --help"
 
     case "$prev" in
         -s|--speed)
@@ -23,7 +25,21 @@ _nightcore() {
             return 0
             ;;
         -F|--format)
-            COMPREPLY=($(compgen -W "flac alac mp3 opus aac" -- "$cur"))
+            # mkv/mp4 need --mkvid
+            COMPREPLY=($(compgen -W "flac alac mp3 opus aac mkv mp4" -- "$cur"))
+            return 0
+            ;;
+        -o|--output)
+            COMPREPLY=($(compgen -f -- "$cur"))
+            return 0
+            ;;
+        --batch|--stats|--output-folder)
+            COMPREPLY=($(compgen -d -- "$cur"))
+            return 0
+            ;;
+        --recurse)
+            # Bare flag scans everything; a number caps the depth
+            COMPREPLY=($(compgen -W "2 3 4" -- "$cur"))
             return 0
             ;;
         --tag-template)

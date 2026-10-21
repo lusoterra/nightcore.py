@@ -1,8 +1,7 @@
 # nightcore.exe - Windows builds
 
-There are two ways to install this: single-file bundle with everything inside, or
-setup. The setup is more flexible because you can drag your own Apple DLLs for AAC
-encoding with qaac.
+The setup installer is the way to install this. It is more flexible
+because you can drag your own Apple DLLs for AAC encoding with qaac.
 
 You can also build with the Apple DLLs but that's legally grey.
 
@@ -11,19 +10,18 @@ You can also build with the Apple DLLs but that's legally grey.
 One script does everything on Linux:
 
 ```bash
-./build.sh                                      # portable + setup + bundle
-./build.sh --fetch-only                         # only fill tools/ + cache/
-./build.sh --no-download                        # stage from cache/tools only
+./build.sh                                      # portable + setup
+./build.sh --fetch-only                         # only fill tools/ + cache/, then stop
+./build.sh --no-download                        # stage from cache/tools only, no network
 ./build.sh --portable-only                      # stop after build/portable
-./build.sh --skip-setup | --skip-bundle         # only one installer type
 ./build.sh [--with-qaac|--full|--build-all]     # qaac variants
 ./build.sh --no-upx                             # skip UPX packing (exes may exceed 100MB)
 ```
 
-| Flag          | Setup / Bundle result                                              |
-|---------------|--------------------------------------------------------------------|
-| _(default)_   | shareable-safe: **no qaac / Apple DLLs**, even if staged           |
-| `--with-qaac` | + `qaac.exe`, **no Apple DLLs** (`-qaac` names, drag-drop yours)   |
+| Flag          | Setup result                                                    |
+|---------------|-----------------------------------------------------------------|
+| _(default)_   | shareable-safe: **no qaac / Apple DLLs**, even if staged       |
+| `--with-qaac` | + `qaac.exe`, **no Apple DLLs** (`-qaac` names, drag-drop yours) |
 | `--full`      | + qaac + your Apple DLLs (`-full` names, personal only)            |
 | `--build-all` | all three                                                          |
 
@@ -31,10 +29,9 @@ Without a flag, `qaac.exe`, `refalac.exe` and the 8 Apple DLLs are stripped from
 every payload. `--with-qaac` keeps the exe but strips the DLLs (thin setup: drag-drop
 your own into `tools\`); `--full` keeps both (personal builds only).
 
-`ffmpeg.exe`/`ffprobe.exe` are UPX-packed in setup payloads and the
-bundle's binaries are UPX-packed too, so every `dist` exe stays under
-the 100MB Cloudflare/Gitea cap (each build prints its byte size and
-warns past it; qaac/Apple DLLs are never packed). UPX-packed binaries
+`ffmpeg.exe`/`ffprobe.exe` are UPX-packed in the setup payload so the
+`dist` exe stays under the 100MB Cloudflare/Gitea cap (each build prints
+its byte size and warns past it; qaac/Apple DLLs are never packed). UPX-packed binaries
 can trip Windows Defender/SmartScreen heuristics — `--no-upx` skips it
 if clean reputation matters more to you than file size.
 
@@ -63,5 +60,23 @@ SOX_VER=14.4.3 ./build.sh --fetch-only              # one-off bump, no file edit
 
 The effective pins print at the start of every run (`versions: ...`).
 Windows target is fixed x86_64: outputs are named
-`nightcore-<ver>-x86_64-setup...` / `nightcore-<ver>-x86_64-bundle...`.
+`nightcore-<ver>-x86_64-setup...`.
 `NIGHTCORE_SRC` (a local path) still overrides `NIGHTCORE_VERSION` when set.
+
+## Shell completions
+
+`completions/` ships in the portable tree and the setup payload
+(`$INSTDIR\completions\`). Load the PowerShell one from your profile
+(once):
+
+```powershell
+. "$env:ProgramFiles\nightcore\completions\nightcore.ps1"   # setup install
+. "<dir>\completions\nightcore.ps1"                        # portable tree
+```
+
+It completes flags, `--format`/`--recurse` values, directories
+for `--batch`/`--stats`/`--output-folder`, files for
+`-o`/`--tag-template`/`--cover`, and audio files for the input. The same
+directory holds bash, zsh, fish, and a POSIX `sh` word-list helper
+(for FreeBSD sh / OpenBSD ksh / busybox ash, which have no completion
+API) for msys2/git-bash/WSL users.

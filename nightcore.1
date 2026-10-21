@@ -59,8 +59,9 @@ bit-perfect, in the current directory. Cannot be used with lossy output
 intermediate first).
 .TP
 .B -F, --format \fIFMT\fR
-Output format: \fBflac\fR (default), \fBalac\fR, \fBwav\fR, \fBmp3\fR,
-\fBopus\fR, \fBaac\fR (.m4a).
+Output format: \fBflac\fR (default), \fBalac\fR, \fBmp3\fR,
+\fBopus\fR, \fBaac\fR (.m4a); \fBmkv\fR (default) or \fBmp4\fR with
+\fB--mkvid\fR (which picks its own container).
 Automatic quality defaults exist only for lossless output, tuned for most
 compression (FLAC level 12; ALAC has no knobs). Lossy outputs prefer
 the best encoder -- MP3 via lame CLI (libmp3lame fallback), Opus via
@@ -189,7 +190,7 @@ PNG/JPG artwork to use as the sole attached picture of outputs
 (opus pictures go via opusenc).
 .TP
 .B --mkvid
-Remux one song (plus one optional \fI.lrc\frc lyric and an image) into a
+Remux one song (plus one optional \fI.lrc\fR lyric and an image) into a
 1080p YouTube video: no audio processing, just a remux. The image is
 letterboxed/pillarboxed into 1920x1080 with black bars (never stretched)
 and sits under a \fClibx264\fR (\fIpreset veryfast, tune stillimage,

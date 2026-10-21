@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nightcore"
-version = "2026.10.17-1"
+version = "2026.10.21-1"
 description = "Bit-perfect nightcore/speed/pitch audio tool (ffmpeg, sox, rubberband)"
 readme = "README.md"
 license = "MIT"

@@ -90,7 +90,7 @@ def batch_prefix(ctx):
 def _kill_active_tool():
     """SIGKILL the tracked tool's process group; best effort, never raises.
 
-    Split out so the Windows bundle hook can patch just this (os.killpg
+    Split out so Windows launchers can patch just this (os.killpg
     does not exist on nt) without duplicating the two-stage handler.
     """
     proc = _active_proc
