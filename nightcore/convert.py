@@ -346,9 +346,6 @@ def run_conversion(args, input_path, out_dir, ctx):
             parent = single_parent(args, input_path)
         outputs = [(suffix, parent / (sanitize_filename(name_base)
                                       + out_ext)) for suffix, _ in jobs]
-        if out_dir is not None or ctx.get("batch_total", 0) > 1:
-            outputs = [(suffix, claim_output_path(ctx, output_path))
-                       for suffix, output_path in outputs]
         if args.output is not None and out_dir is None:
             outputs = [(suffix, parent / args.output)
                        for suffix, _ in outputs]
