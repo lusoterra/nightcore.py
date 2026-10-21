@@ -248,10 +248,16 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
     # Tag template: override/keep source tags, strip everything else at
     # encode time. A title=/artist= value may use {slots} (rendered here
     # from the per-job facts); any explicit title= is used verbatim.
+    # Filenames keep the source record: --autorename {title} renders the
+    # source title, never the template's (a template "My Mix" must not
+    # rename every file alike, and a template "[Nightcore {diff}]"
+    # must not double the filename's own [Nightcore {diff}]).
     ff_extra = {}
     title_base = original_title
     stub_encoder = None
     title_verbatim = False
+    source_title = original_title
+    source_artist = artist
     if tmpl is not None:
         (title_base, ff_extra, stub_encoder, artist,
          original_title, title_verbatim) = apply_template_tags(
@@ -296,6 +302,8 @@ def resolve_audio_naming(args, tmpl, input_path, speed,
         "depth_pcm": depth_pcm,
         "artist": artist,
         "original_title": original_title,
+        "source_title": source_title,
+        "source_artist": source_artist,
         "title_base": title_base,
         "title_verbatim": title_verbatim,
         "inherited": inherited,
@@ -393,7 +401,7 @@ def predict_audio_stem(args, ctx, audio_path):
     elif getattr(args, "autorename", None) is None:
         name_base = clean_source_title(Path(audio_path).stem)
     elif args.autorename == "":
-        # Bare --autorename: legacy "Artist - Title" + full suffix
+        # Empty --autorename= : legacy "Artist - Title" + full suffix
         # (script groups leave the base only where the suffix re-adds
         # them -- see autorename_base).
         name_base = autorename_base(
@@ -404,8 +412,9 @@ def predict_audio_stem(args, ctx, audio_path):
     else:
         # Custom --autorename TEMPLATE already carries its own
         # {diff}/{quality}/{resample} slots: no suffix appended.
+        # {title} is the source title, never the tag template's.
         custom = render_autorename(
-            args, naming["artist"], naming["original_title"],
+            args, naming["artist"], naming["source_title"],
             strip_empty_display_tags(
                 strip_denightcore_tags(Path(audio_path).stem)),
             diff=naming["diff_bare"],

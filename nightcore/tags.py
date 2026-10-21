@@ -524,13 +524,17 @@ def autorename_base(artist, rendered_title, fallback_stem, *,
 
 def render_autorename(args, artist, title, fallback_stem, *, diff="",
                       quality="", resample="", denightcore=""):
-    """Filename stem for --autorename (bare or TEMPLATE), or None if off.
+    """Filename stem for --autorename (bare/default TEMPLATE), or None.
 
-    Bare --autorename (empty string const) keeps the legacy behavior:
-    "Artist - Title" (artist prefix omitted without an artist tag).
-    A TEMPLATE value renders through {artist}/{title}/{diff}/{quality}/
-    {resample}/{denightcore} with user-supplied brackets. Returns None
-    when --autorename was not passed (caller keeps the input stem).
+    A bare --autorename flag renders the default template; an explicit
+    TEMPLATE value renders through {artist}/{title}/{diff}/{quality}/
+    {resample}/{denightcore} with user-supplied brackets (an empty
+    --autorename= keeps the legacy "Artist - Title" spelling, artist
+    prefix omitted without an artist tag). Callers pass
+    the source title (never the tag template's, so the two can't double
+    each other); {diff} is full precision ({diff(N)} rounds, as in tag
+    templates). Returns None when --autorename was not passed (caller
+    keeps the input stem).
     """
     tmpl = getattr(args, "autorename", None)
     if tmpl is None:

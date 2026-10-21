@@ -117,6 +117,7 @@ def run_conversion(args, input_path, out_dir, ctx):
     depth_pcm = naming["depth_pcm"]
     artist = naming["artist"]
     original_title = naming["original_title"]
+    source_title = naming["source_title"]
     title_base = naming["title_base"]
     title_verbatim = naming["title_verbatim"]
     ff_extra = naming["ff_extra"]
@@ -285,14 +286,13 @@ def run_conversion(args, input_path, out_dir, ctx):
         )
         return 127
 
-    # Output filenames carry the shift ([Nightcore N ...]) and, when
-    # resampling now, rate ([96kHz]) appended to a base; quality lives
-    # in the pipeline and explicit template {quality} only, never in
-    # names. --autorename builds the
-    # base from tags ("Artist - Title", artist prefix omitted when the
-    # source has no artist tag) or from a user TEMPLATE with bare
-    # {artist}/{title}/{diff}/{quality}/{resample}/{denightcore} slots;
-    # by default the base is the input's own stem. The Title tag
+    # Output filenames come from --autorename (default
+    # "{artist} - {title} [Nightcore {diff}] [{quality}] [{resample}]
+    # [{denightcore}]", artist prefix omitted without an artist tag;
+    # bare flag keeps legacy "Artist - Title [tags]"). The {title}
+    # slot is always the source title -- tag-template title= shapes
+    # the Title tag only, never filenames, so the two can't double
+    # each other. The Title tag
     # follows the tag template (default "Title [Nightcore diff]");
     # the Artist tag always rides through untouched (source-mapped).
     # Names are sanitized for Linux/Windows-safe filenames. Outputs land
@@ -326,7 +326,8 @@ def run_conversion(args, input_path, out_dir, ctx):
     elif getattr(args, "autorename", None) is None:
         name_base = clean_source_title(input_path.stem)
     elif args.autorename == "":
-        # Bare --autorename: legacy "Artist - Title [tags]" (script groups
+        # Empty --autorename= (--autorename= with nothing after it):
+        # legacy "Artist - Title [tags]" (script groups
         # leave the base only where the suffix re-adds them -- see
         # autorename_base); otherwise inherited tags stay put.
         _base_title = autorename_base(
@@ -334,12 +335,15 @@ def run_conversion(args, input_path, out_dir, ctx):
             drop_shift=bool(diff_bare), drop_rate=bool(resample_bare))
         name_base = _base_title
     else:
+        # Custom TEMPLATE: {title} is the source title (never the tag
+        # template's, so the two can't double each other), {diff} is
+        # full precision ({diff(N)} rounds, as in tag templates).
+        # The template already carries its own slots: suffixes below
+        # must not be appended again.
         name_base = render_autorename(
-            args, artist, original_title, input_path.stem,
+            args, artist, source_title, input_path.stem,
             diff=diff_bare, quality=quality_bare, resample=resample_bare,
             denightcore=denightcore_bare)
-        # Custom TEMPLATE already carries its own slots: suffixes below
-        # must not be appended again.
         if out_dir is not None:
             parent = out_dir
         else:

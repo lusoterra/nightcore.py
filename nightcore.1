@@ -92,11 +92,16 @@ Print output filename(s), convert nothing.
 .TP
 .B --autorename \fR[\fITEMPLATE\fR]
 Rename output via a filename-stem template with bare \fI{artist} {title}
-{diff} {quality} {resample} {denightcore}\fR slots. Default is
+{diff} {quality} {resample} {denightcore}\fR slots (with \fI{title}\fR
+always the source title -- a tag-template \fItitle=\fR shapes the Title
+tag only, never filenames; \fI{diff}\fR is full precision,
+\fI{diff(N)}\fR rounds as in tag templates). No flag keeps the input
+filename and appends params; a bare \fI--autorename\fR flag renders
+the default template
 \fI"{artist} - {title} [Nightcore {diff}] [{quality}] [{resample}]
 [{denightcore}]"\fR (empty slots drop their brackets; lossy outputs
-drop quality/rate). Bare
-\fI--autorename\fR keeps the legacy \fIArtist - Title [tags]\fR (base
+drop quality/rate). \fI--autorename=\fR with an explicit empty value
+keeps the legacy \fIArtist - Title [tags]\fR (base
 cleaned of script groups, suffix recovered from filename tags under
 \fI-N\fR, so re-runs are idempotent). A bare flag goes last or
 uses \fI=\fR, else it eats the input filename as its template.

@@ -55,6 +55,9 @@ def run_renametag(args, input_path, out_dir, ctx):
     ff_extra = {}
     stub_encoder = None
     title_verbatim = False
+    # Filenames keep the source record: --autorename {title} renders the
+    # source title, never the tag template's (same rule as conversions).
+    file_title = original_title
     # Read the existing stamp up front: it feeds both preservation below
     # and the {diff} slot. The slot reflects the recovered shift for this
     # file -- exact Settings parse first, filename tags as fallback, else
@@ -225,7 +228,8 @@ def run_renametag(args, input_path, out_dir, ctx):
     if _auto is None:
         name_base = strip_empty_display_tags(stem)
     elif _auto == "":
-        # Bare --autorename: "Artist - Title" rebuilt canonically. The
+        # Empty --autorename= : legacy "Artist - Title" rebuilt
+        # canonically. The
         # diff prints in display form with any recovered resample tag;
         # recovered quality groups stay out of names (pipeline keeps
         # them). Idempotent across re-runs; unrecoverable slots simply
@@ -242,9 +246,17 @@ def run_renametag(args, input_path, out_dir, ctx):
     else:
         # Custom TEMPLATE: same restored slots as above, so explicit
         # [{diff}]/[{quality}]/[{resample}] render instead of vanishing.
-        # Bare mode stays quality-free by design (pipeline keeps it);
-        # custom honors an explicit {quality} request.
-        name_base = render_autorename(args, artist, original_title, stem,
+        # {title} is the source title (never the tag template's, so the
+        # two can't double each other), cleaned conversion-style: shift
+        # groups go where {diff} re-adds them, quality groups always
+        # (the [{quality}] slot carries them). Bare mode stays
+        # quality-free by design (pipeline keeps it); custom honors an
+        # explicit {quality} request.
+        file_title = strip_empty_display_tags(file_title)
+        if recovered_diff:
+            file_title = split_shift_tags(file_title)[0]
+        file_title = strip_quality_rate_tags(file_title)
+        name_base = render_autorename(args, artist, file_title, stem,
                                       diff=recovered_diff, quality=_qb_full,
                                       resample=_rb_full)
     parent = (out_dir if out_dir is not None

@@ -28,7 +28,7 @@ _nightcore() {
         '--denightcore[Undo from filename tags: reads and removes Nx/Nst]' \
         '-n[Print output filename(s) and exit without converting]' \
         '--dry-run[Print output filename(s) and exit without converting]' \
-        '--autorename+[Rename output via filename template (bare = Artist - Title)]: : ' \
+        '--autorename+[Rename output via filename template (bare = default template)]: : ' \
         '-N[Retag mode: rewrite tags and rename in place]' \
         '--renametag[Retag mode: rewrite tags and rename]' \
         '--in-place[With -N batch: renametag alongside inputs]' \

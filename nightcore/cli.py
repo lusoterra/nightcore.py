@@ -166,18 +166,22 @@ def parse_arguments():
         "--autorename",
         type=str,
         nargs="?",
-        const="",
-        default="{artist} - {title} [Nightcore {diff}] [{quality}] [{resample}] [{denightcore}]",
+        const="{artist} - {title} [Nightcore {diff}] [{quality}] [{resample}] [{denightcore}]",
+        default=None,
         metavar="TEMPLATE",
         help="Rename output via a filename-stem template with bare\n"
              "{artist} {title} {diff} {quality} {resample} {denightcore}\n"
-             "slots (bare flag keeps legacy 'Artist - Title [tags]';\n"
-             "quality never rides fresh names, pipeline keeps it;\n"
-             "default is '{artist} - {title} [Nightcore {diff}]\n"
-             "[{quality}] [{resample}] [{denightcore}]' (empty slots\n"
-             "drop their brackets; lossy outputs drop quality/rate);\n"
-             "denightcore renders its verdict via {denightcore};\n"
-             "bare flag goes last, or use --autorename=)"
+             "slots (bare flag uses the default template below;\n"
+             "{title} is always the source title (tag-template title=\n"
+             "shapes the Title tag only, never filenames); {diff} is\n"
+             "full precision ({diff(N)} rounds, as in tag templates);\n"
+             "no flag keeps the input filename, appending params;\n"
+             "bare-flag default is '{artist} - {title} [Nightcore\n"
+             "{diff}] [{quality}] [{resample}] [{denightcore}]'\n"
+             "(empty slots drop their brackets; lossy outputs drop\n"
+             "quality/rate; denightcore renders its verdict via\n"
+             "{denightcore}); --autorename= keeps the legacy\n"
+             "'Artist - Title [tags]'; a bare flag goes last.)"
     )
 
     parser.add_argument(
