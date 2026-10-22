@@ -110,10 +110,35 @@ def _git_hash_from_checkout() -> str | None:
     files ignored, mirroring release.sh), so dev builds never masquerade
     as clean. Best-effort: any failure (no git, no repo, timeout)
     returns None. Never raises.
+
+    Only trusts a repo that actually owns this file: an installed copy
+    sitting inside some unrelated git checkout (e.g. a PKGBUILD
+    ``pkg/`` dir) must not report that repo's hash as nightcore's.
     """
     import subprocess
 
-    cwd = Path(__file__).resolve().parent
+    here = Path(__file__).resolve()
+    cwd = here.parent
+    try:
+        top_proc = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except Exception:
+        return None
+    if top_proc.returncode != 0:
+        return None
+    top_text = (top_proc.stdout or "").strip()
+    if not top_text:
+        return None
+    try:
+        toplevel = Path(top_text).resolve()
+        here.relative_to(toplevel)
+        owned = (toplevel / "nightcore" / "__init__.py").resolve()
+    except Exception:
+        return None
+    if owned != here:
+        return None
     try:
         proc = subprocess.run(
             ["git", "-C", str(cwd), "rev-parse", "--short", "HEAD"],
