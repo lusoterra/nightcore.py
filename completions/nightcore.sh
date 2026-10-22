@@ -49,7 +49,7 @@ nightcore_values() {
     case "$1" in
         -s|--speed) printf '%s\n' 1.1 1.15 1.2 1.25 1.3 0.9 0.85 0.8 ;;
         -S|--semitones) printf '%s\n' 1.65 2.41 3.16 3.86 4.55 -1.82 -2.80 -3.86 ;;
-        -F|--format) printf '%s\n' flac alac mp3 opus aac mkv mp4 ;;
+        -F|--format) printf '%s\n' flac alac mp3 opus aac mkv mp4 mp4alac ;;
         --recurse) printf '%s\n' 2 3 4 ;;
         *) return 1 ;;
     esac

@@ -81,7 +81,7 @@ def parse_arguments():
         default="flac",
         metavar="FMT",
         help="Output format: flac (default), alac, mp3, opus, aac;\n"
-             "with --mkvid: mkv (default) or mp4 (the video container)"
+             "with --mkvid: mkv (default), mp4 or mp4alac (the video container)"
     )
 
     parser.add_argument(
@@ -287,10 +287,14 @@ def parse_arguments():
         help="Remux one song (+ optional .lrc lyrics, + image) into a\n"
         "1080p YouTube video: the image is letterboxed/pillarboxed into\n"
         "1920x1080 with black bars (never stretched) and the audio rides\n"
-        "losslessly -- FLAC in mkv, ALAC in mp4 -- so YouTube's Opus\n"
-        "transcode is one generation of loss. -F picks mkv (default)\n"
-        "or mp4. No image and no embedded cover art is a loud error;\n"
-        "no audio processing flags apply (it is a remux, not a conversion)."
+        "as FLAC in mkv, AAC in mp4 (default, qaac TVBR 91 unless\n"
+        "--lossy-opts overrides) or ALAC in mp4alac -- mp4 plays\n"
+        "everywhere (Discord and friends reject ALAC, mkv support is\n"
+        "even worse) while mkv/mp4alac stay lossless, so YouTube's Opus\n"
+        "transcode is one generation of loss. -F picks mkv (default),\n"
+        "mp4 or mp4alac. No image and no embedded cover art is a loud\n"
+        "error; no audio processing flags apply (it is a remux, not a\n"
+        "conversion)."
     )
 
     parser.add_argument(
@@ -586,7 +590,7 @@ def main():
     if args.format not in OUTPUT_FORMATS:
         print(
             f"Error: unknown output format {args.format!r} "
-            "(flac, alac, mp3, opus, aac; mkv/mp4 require --mkvid)",
+            "(flac, alac, mp3, opus, aac; mkv/mp4/mp4alac require --mkvid)",
             file=sys.stderr,
         )
         return 1

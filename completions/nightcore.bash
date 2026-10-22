@@ -25,8 +25,8 @@ _nightcore() {
             return 0
             ;;
         -F|--format)
-            # mkv/mp4 need --mkvid
-            COMPREPLY=($(compgen -W "flac alac mp3 opus aac mkv mp4" -- "$cur"))
+            # mkv/mp4/mp4alac need --mkvid
+            COMPREPLY=($(compgen -W "flac alac mp3 opus aac mkv mp4 mp4alac" -- "$cur"))
             return 0
             ;;
         -o|--output)

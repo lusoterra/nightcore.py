@@ -27,9 +27,12 @@ of Nightcore. You can, of course, slow down music with it as well.
 - Retime `.lrc` lyrics to match sped-up audio; they land next to the music with the same name
 - `--mkvid`: remux one song (+ optional `.lrc` lyrics, + image) into a
   1080p YouTube video. The image is letterboxed/pillarboxed into 1920x1080
-  with black bars (never stretched) and the audio rides losslessly -- FLAC
-  in mkv, ALAC in mp4 -- so YouTube's Opus transcode is one generation of
-  loss; no resampling happens. `-F mkv` (default) or `-F mp4`. Without
+  with black bars (never stretched) and the audio rides as FLAC in mkv,
+  AAC in mp4 (default, qaac TVBR 91 unless `--lossy-opts` overrides) or
+  ALAC in mp4alac -- mp4 plays everywhere (Discord and friends reject
+  ALAC, and mkv support is even worse) while mkv/mp4alac stay lossless,
+  so YouTube's Opus transcode is one generation of loss; no resampling
+  happens. `-F mkv` (default), `-F mp4` or `-F mp4alac`. Without
   `--cover` the song's embedded cover art is used; no image at all fails
   loudly. `.lrc` lyrics are embedded as a subtitle track, and all audio
   tags (title, artist, album, date, genre ...) carry over. No audio

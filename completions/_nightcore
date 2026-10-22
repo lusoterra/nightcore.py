@@ -14,8 +14,8 @@ _nightcore() {
         '--reciprocal[Use reciprocal of speed (1.2 becomes 1\/1.2)]' \
         '-R[Resample output to the next higher standard sample rate]' \
         '--resample[Resample output to the next higher standard sample rate]' \
-        '-F+[Output format (mkv/mp4 need --mkvid)]:format:(flac alac mp3 opus aac mkv mp4)' \
-        '--format+[Output format (mkv/mp4 need --mkvid)]:format:(flac alac mp3 opus aac mkv mp4)' \
+        '-F+[Output format (mkv/mp4/mp4alac need --mkvid)]:format:(flac alac mp3 opus aac mkv mp4 mp4alac)' \
+        '--format+[Output format (mkv/mp4/mp4alac need --mkvid)]:format:(flac alac mp3 opus aac mkv mp4 mp4alac)' \
         '--lossy-opts=[Extra lossy encoder flags (equals form only)]: : ' \
         '--batch+[Convert directory to .\/encodes\/format]:dir:_files -\/' \
         '--stats+[Print folder statistics]:dir:_files -/' \

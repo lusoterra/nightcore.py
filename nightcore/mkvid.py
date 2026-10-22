@@ -2,19 +2,24 @@
 1080p YouTube video.
 
 The image is letterboxed / pillarboxed into 1920x1080 with black bars
-(never stretched); the audio is remuxed losslessly -- FLAC in mkv, ALAC
-in mp4 -- so YouTube's Opus transcode is a single generation of loss.
-There is no resampling (mkv/mp4 + FLAC/ALAC accept any sample rate); if
+(never stretched); the audio rides as FLAC in mkv, ALAC in mp4alac, or
+AAC in mp4 (default, qaac TVBR 91 unless --lossy-opts overrides) -- so
+mkv/mp4alac reach YouTube's Opus transcode as a single generation of
+loss, while mp4 trades one extra lossy generation for players that
+reject ALAC (Discord and friends) and containers they reject (mkv).
+There is no resampling (the containers accept the source rate); if
 that ever changes, SoX does the resampling.
 
 No audio processing flags (-s, -S, -p, -r, -R, -D) apply: this is a
-remux, not a conversion.
+remux, not a conversion (mp4's AAC encode is the one exception, and it
+takes no shift either).
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -22,10 +27,22 @@ import tempfile
 from pathlib import Path
 
 from . import __version__
-from .audio import cover_codec_name, extract_cover_tmp, probe_audio
+from .audio import (
+    cover_codec_name,
+    extract_cover_tmp,
+    get_audio_info,
+    probe_audio,
+    wav_codec_for,
+)
+from .backends import (
+    detect_lossy_dialect,
+    run_qaac_alac,
+    select_lossy_backend,
+)
 from .constants import (
     AUDIO_EXTS,
     _IMAGE_MIME,
+    LOSS_DEFAULTS,
     MKVID_CRF,
     MKVID_DEFAULT,
     MKVID_FORMATS,
@@ -174,7 +191,7 @@ def run_mkvid(args):
         fmt = MKVID_DEFAULT
     if fmt not in MKVID_FORMATS:
         print(
-            f"Error: --mkvid needs -F mkv or -F mp4 (got {fmt!r})",
+            f"Error: --mkvid needs -F mkv, -F mp4 or -F mp4alac (got {fmt!r})",
             file=sys.stderr,
         )
         return 1
@@ -182,6 +199,45 @@ def run_mkvid(args):
     ext = spec["ext"]
     audio_codec = spec["audio_codec"]
     sub_codec = spec["subtitle_codec"]
+    is_lossy = bool(spec.get("lossy"))
+
+    # --lossy-opts shapes mp4's AAC encode only (same dialect rules and
+    # V91 default as -F aac): qaac-style flags pick qaac, -X:a style picks
+    # ffmpeg. Lossless containers (mkv, mp4alac) ignore them with the
+    # usual warning.
+    lossy_opts = []
+    if getattr(args, "lossy_opts", None) is not None:
+        try:
+            lossy_opts = shlex.split(args.lossy_opts)
+        except ValueError as e:
+            print(f"Error: could not parse --lossy-opts: {e}", file=sys.stderr)
+            return 1
+    if lossy_opts and not is_lossy:
+        print("Warning: --lossy-opts ignored for lossless output",
+              file=sys.stderr)
+        lossy_opts = []
+    backend = None
+    if is_lossy:
+        try:
+            dialect = detect_lossy_dialect("aac", lossy_opts)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        backend = select_lossy_backend("aac", dialect)
+        if backend is None:
+            return 127
+        if not lossy_opts:
+            default = LOSS_DEFAULTS[("aac", backend["kind"])]
+            if default is None:
+                print("Error: ffmpeg AAC has no default (it isn't that "
+                      "great); pass explicit --lossy-opts, e.g. "
+                      "--lossy-opts=-b:a 160k (or better: install qaac)",
+                      file=sys.stderr)
+                return 1
+            lossy_opts = list(default)
+            say(f"Default lossy opts for {fmt} "
+                f"via {backend['kind']}: {' '.join(default)}")
+    use_qaac = is_lossy and backend is not None and backend.get("kind") == "qaac"
 
     inputs = [Path(p) for p in args.input]
     audio_files = [
@@ -296,12 +352,49 @@ def run_mkvid(args):
                 duration_ms = None
             write_srt(lrc_path, srt_path, duration_ms)
 
+        # --- mp4 AAC via qaac: decode + CoreAudio encode first -----
+        # qaac is audio-only (never tags: those ride the final mux from
+        # the song itself), so its output becomes a second audio input
+        # below while the song stays on as the metadata source.
+        aac_tmp = None
+        if use_qaac:
+            if tempdir is None:
+                tempdir = Path(tempfile.mkdtemp(prefix="nightcore-mkvid-"))
+            _codec, _br, _bits, _fbr, _enc = get_audio_info(song)
+            depth_pcm = wav_codec_for(_bits)
+            tmp_wav = tempdir / "mkvid.wav"
+            aac_tmp = tempdir / "mkvid-aac.m4a"
+            say(f"  ffmpeg decode -> {depth_pcm}")
+            run_tool(["ffmpeg", "-nostdin", "-y",
+                      "-i", str(song),
+                      "-map", "0:a", "-c:a", depth_pcm,
+                      str(tmp_wav)])
+            say(f"  qaac encode aac ({' '.join(lossy_opts)})")
+            run_qaac_alac(tmp_wav, aac_tmp, alac=False,
+                           extra_args=lossy_opts)
+            try:
+                tmp_wav.unlink()
+            except OSError:
+                pass
+
         # --- ffmpeg remux -------------------------------------------
+        # Input layout is [image, audio, (song-as-metadata,) (srt,)]:
+        # lossless and ffmpeg-AAC mux the song directly (audio=1,
+        # meta=1, srt=2); qaac muxes its temp m4a (audio=1, meta=2,
+        # srt=3) so tags still come from the song, never the bare temp.
         cmd = ["ffmpeg", "-nostdin",
                "-y" if args.overwrite else "-n",
                "-loop", "1", "-i", str(image),
-               "-i", str(song)]
+               "-i", str(aac_tmp if use_qaac else song)]
+        meta_idx = "1"
+        if use_qaac:
+            cmd += ["-i", str(song)]
+            meta_idx = "2"
+        srt_idx = None
         if srt_path is not None:
+            # Input indices so far: 0=image, 1=audio, [2=song]; the srt
+            # lands next, so its index is the current input count.
+            srt_idx = "2" if not use_qaac else "3"
             cmd += ["-i", str(srt_path)]
         vf = (
             f"[0:v]scale={MKVID_WIDTH}:{MKVID_HEIGHT}:"
@@ -313,17 +406,24 @@ def run_mkvid(args):
         cmd += ["-filter_complex", vf]
         cmd += ["-map", "[vid]", "-map", "1:a"]
         if srt_path is not None:
-            cmd += ["-map", "2:s", "-c:s", sub_codec]
+            assert srt_idx is not None
+            cmd += ["-map", f"{srt_idx}:s", "-c:s", sub_codec]
         cmd += [
             "-c:v", "libx264", "-preset", MKVID_PRESET, "-tune",
             MKVID_TUNE, "-crf", MKVID_CRF,
-            "-c:a", audio_codec,
-            "-shortest",
         ]
-        if fmt == "mp4":
+        if use_qaac:
+            # Already AAC: stream-copy the qaac output, no second encode.
+            cmd += ["-c:a", "copy"]
+        elif is_lossy:
+            cmd += ["-c:a", audio_codec] + list(lossy_opts)
+        else:
+            cmd += ["-c:a", audio_codec]
+        cmd += ["-shortest"]
+        if ext == ".mp4":
             cmd += ["-movflags", "+faststart"]
         # All metadata from the song, then make sure title/artist land.
-        cmd += ["-map_metadata", "1"]
+        cmd += ["-map_metadata", meta_idx]
         tags = read_tags(
             song, "title", "artist", "album", "date", "genre",
             "comment", "description",
@@ -365,7 +465,7 @@ def run_mkvid(args):
         return 0
 
     except subprocess.CalledProcessError as e:
-        print(f"\nffmpeg failed with exit code {e.returncode}", file=sys.stderr)
+        print(f"\nffmpeg/qaac failed with exit code {e.returncode}", file=sys.stderr)
         return 1
     except FileNotFoundError:
         print("Error: ffmpeg went missing mid-run.", file=sys.stderr)

@@ -60,7 +60,8 @@ intermediate first).
 .TP
 .B -F, --format \fIFMT\fR
 Output format: \fBflac\fR (default), \fBalac\fR, \fBmp3\fR,
-\fBopus\fR, \fBaac\fR (.m4a); \fBmkv\fR (default) or \fBmp4\fR with
+\fBopus\fR, \fBaac\fR (.m4a); \fBmkv\fR (default), \fBmp4\fR or
+\fBmp4alac\fR with
 \fB--mkvid\fR (which picks its own container).
 Automatic quality defaults exist only for lossless output, tuned for most
 compression (FLAC level 12; ALAC has no knobs). Lossy outputs prefer
@@ -194,10 +195,14 @@ Remux one song (plus one optional \fI.lrc\fR lyric and an image) into a
 1080p YouTube video: no audio processing, just a remux. The image is
 letterboxed/pillarboxed into 1920x1080 with black bars (never stretched)
 and sits under a \fClibx264\fR (\fIpreset veryfast, tune stillimage,
-crf 18\fR) still picture. The audio rides losslessly -- FLAC in \fBmkv\fR,
-ALAC in \fBmp4\fR -- so YouTube's Opus transcode is exactly one
-generation of loss; no resampling happens (mkv/mp4 + FLAC/ALAC accept
-any sample rate). \fB-F\fR picks \fBmkv\fR (default) or \fBmp4\fR.
+crf 18\fR) still picture. The audio rides as FLAC in \fBmkv\fR, AAC in
+\fBmp4\fR (default, qaac TVBR 91 unless \fB--lossy-opts\fR overrides)
+or ALAC in \fBmp4alac\fR -- \fBmp4\fR plays everywhere (Discord and
+friends reject ALAC, mkv support is even worse) while \fBmkv\fR and
+\fBmp4alac\fR stay lossless, so YouTube's Opus transcode is exactly one
+generation of loss; no resampling happens (mkv/mp4alac + FLAC/ALAC accept
+any sample rate; an AAC encoder choking on a weird rate fails loudly).
+\fB-F\fR picks \fBmkv\fR (default), \fBmp4\fR or \fBmp4alac\fR.
 Without \fB--cover\fR the song's embedded cover art is used; a song with
 no image and no \fB--cover\fR fails loudly. \fI.lrc\fR lyrics are
 converted to SubRip and embedded as a subtitle track (\fBsrt\fR in mkv,
@@ -230,7 +235,8 @@ dialect picks the encoder: native-CLI style (\fI-V\fR, \fI--bitrate\fR,
 any \fI--long-opt\fR) uses lame/opusenc/qaac, \fI-X:a\fR style uses the
 ffmpeg encoder; mixing both is an error. A forced-but-missing encoder
 fails loudly instead of falling back. Ignored (with a warning) for
-lossless outputs. Only the equals form is accepted: a space-separated
+lossless outputs (including --mkvid mkv/mp4alac); --mkvid mp4 shares
+the AAC dialect and TVBR 91 default. Only the equals form is accepted: a space-separated
 value starting with \fB-\fR would parse as a nightcore flag, so it is
 rejected outright.
 .TP

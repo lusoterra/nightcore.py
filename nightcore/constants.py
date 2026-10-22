@@ -189,12 +189,20 @@ _TAG_ALIASES = {"albumartist": "album_artist"}
 
 # --mkvid: still-image YouTube video remuxes. The picture is letterboxed
 # / pillarboxed into 1080p with black bars (never stretched) and the audio
-# rides losslessly (FLAC in mkv, ALAC in mp4), so YouTube's Opus
-# transcode is exactly one generation of loss. No resampling: mkv/mp4 +
-# FLAC/ALAC accept any sample rate, so the source rate passes through.
+# rides as FLAC in mkv, ALAC in mp4alac, or AAC in mp4 (default, qaac
+# TVBR 91 unless --lossy-opts overrides). mkv/mp4alac stay lossless so
+# YouTube's Opus transcode is exactly one generation of loss; mp4's AAC
+# plays everywhere (Discord and friends reject ALAC, and mkv support is
+# even worse) at the cost of one extra lossy generation. No resampling:
+# the containers accept the source rate, so it passes through (an AAC
+# encoder choking on a weird rate fails loudly instead).
 MKVID_FORMATS = {
-    "mkv": {"ext": ".mkv", "audio_codec": "flac", "subtitle_codec": "srt"},
-    "mp4": {"ext": ".mp4", "audio_codec": "alac", "subtitle_codec": "mov_text"},
+    "mkv": {"ext": ".mkv", "audio_codec": "flac", "subtitle_codec": "srt",
+            "lossy": False},
+    "mp4": {"ext": ".mp4", "audio_codec": "aac", "subtitle_codec": "mov_text",
+            "lossy": True},
+    "mp4alac": {"ext": ".mp4", "audio_codec": "alac",
+                "subtitle_codec": "mov_text", "lossy": False},
 }
 MKVID_DEFAULT = "mkv"
 MKVID_WIDTH = 1920

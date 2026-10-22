@@ -6,7 +6,7 @@ complete -c nightcore -s r -l reciprocal -d 'Use 1/speed instead (undo a speedup
 complete -c nightcore -s y -l overwrite -d 'Overwrite existing output files'
 complete -c nightcore -s q -l quiet -d 'Drop tool output (repeat for warnings/errors only)'
 complete -c nightcore -s R -l resample -d 'Resample to next standard rate via SoX'
-complete -c nightcore -s F -l format -d 'Output format (mkv/mp4 need --mkvid)' -x -a 'flac alac mp3 opus aac mkv mp4'
+complete -c nightcore -s F -l format -d 'Output format (mkv/mp4/mp4alac need --mkvid)' -x -a 'flac alac mp3 opus aac mkv mp4 mp4alac'
 complete -c nightcore -l lossy-opts -d 'Encoder quality flags (equals form only)' -r
 complete -c nightcore -l batch -d 'Convert every audio file in DIR' -r -a '(__fish_complete_directories)'
 complete -c nightcore -l stats -d 'Print statistics for DIR and exit' -r -a '(__fish_complete_directories)'
