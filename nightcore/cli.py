@@ -8,7 +8,7 @@ import shutil
 import signal
 import sys
 
-from . import __version__, util
+from . import __full_version__, util
 from .audio import speed_from_semitones
 from .backends import detect_lossy_dialect, run_check, select_lossy_backend
 from .constants import AUDIO_EXTS, COVER_ART_EXTS, COVER_ART_NAMES, LOSS_DEFAULTS, OUTPUT_FORMATS, _IMAGE_MIME
@@ -300,7 +300,7 @@ def parse_arguments():
     parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {__version__}",
+        version=f"%(prog)s {__full_version__}",
         help="Print version and exit"
     )
 

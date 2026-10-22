@@ -956,11 +956,11 @@ def run_check():
     all required tools are present, 1 otherwise (optional tools never
     fail the run). Never raises.
     """
-    from . import __version__
+    from . import __full_version__
     _ensure_bundled_on_path()
     plat = f"{sys.platform} {platform.machine()}".strip()
     py_ver = platform.python_version()
-    print(f"nightcore {__version__} --check "
+    print(f"nightcore {__full_version__} --check "
           f"({plat}, python {py_ver})")
 
     missing_required = []
