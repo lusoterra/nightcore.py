@@ -124,7 +124,7 @@ def run_lrc(args, input_path, out_dir, ctx):
     # here; misses fall through to the full predict below.
     if (out_dir is not None and not args.overwrite and not args.dry_run
             and ctx.get("existing_outputs") is not None):
-        from .plan import fast_lossy_stem as _fast_stem
+        from .plan import fast_default_stem as _fast_stem
         _parent = None
         _bfiles = ctx.get("batch_files")
         if _bfiles is not None:

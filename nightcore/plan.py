@@ -477,15 +477,17 @@ def _fast_inherited_shift(input_path):
     return parsed
 
 
-def fast_lossy_stem(args, ctx, audio_path):
-    """Sanitized output stem for default-named lossy jobs, or None.
+def fast_default_stem(args, ctx, audio_path):
+    """Sanitized output stem for default-named batch jobs, or None.
 
-    No ffprobe, no packet scan: the lossy filename is
-    clean(stem) + display(diff), where diff comes from the job settings
-    alone except for speed-1.0 identity jobs, which inherit the source
-    record (read via _fast_inherited_shift). Returns None when the job
-    is not eligible (denightcore, custom autorename, resample, lossless
-    output) so callers fall back to the full resolve.
+    No ffprobe, no packet scan: default names are clean(stem) +
+    display(diff), where diff comes from the job settings alone except
+    for speed-1.0 identity jobs, which inherit the source record (read
+    via _fast_inherited_shift). Quality/rate probes never feed default
+    filenames (they only fill --autorename slots), so lossless jobs are
+    equally predictable. Returns None when the job is not eligible
+    (denightcore, custom autorename, resample) so callers fall back to
+    the full resolve.
     """
     from .audio import semitones_from_speed
     from .tags import display_suffix, round_diff_bare
@@ -494,8 +496,6 @@ def fast_lossy_stem(args, ctx, audio_path):
     if getattr(args, "autorename", None) is not None:
         return None
     if getattr(args, "resample", False):
-        return None
-    if not bool(OUTPUT_FORMATS.get(args.format, {}).get("lossy")):
         return None
     try:
         speed = ctx["speed"]

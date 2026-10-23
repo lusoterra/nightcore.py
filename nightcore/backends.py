@@ -180,6 +180,24 @@ _VERSION_WORD = re.compile(r"version\s+([^\s)]+)")
 _VERSION_TOKEN = re.compile(r"\S*\d\S*")
 
 
+_which_cache = {}
+
+
+def which_cached(name):
+    """shutil.which with a run-level cache.
+
+    Per-file PATH scans add up over batch runs (PATH entries are
+    stat'ed on every call); tool presence cannot change mid-run, so
+    one lookup per name is enough. Never raises.
+    """
+    if name not in _which_cache:
+        try:
+            _which_cache[name] = shutil.which(name)
+        except Exception:
+            _which_cache[name] = None
+    return _which_cache[name]
+
+
 def tool_version(name):
     """Compact version token for the pipeline tag ("n9.0.2", "4.0", ...).
 

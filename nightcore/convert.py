@@ -9,7 +9,7 @@ import sys
 import tempfile
 
 from .audio import cover_codec_name, extract_cover_tmp, format_rate, sample_is_float, semitones_from_speed, speed_from_semitones
-from .backends import coreaudio_toolbox_version, find_qaac, flac_postprocess, missing_metaflac, qaac_redist_hint, run_ffmpeg, run_lame, run_opusenc, run_qaac_alac, run_rubberband, run_sox_rate, tame_hot_wav, tool_version
+from .backends import coreaudio_toolbox_version, find_qaac, flac_postprocess, missing_metaflac, qaac_redist_hint, run_ffmpeg, run_lame, run_opusenc, run_qaac_alac, run_rubberband, run_sox_rate, tame_hot_wav, tool_version, which_cached
 from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, OUTPUT_FORMATS, PIPELINE_TAG, STALE_TAGS, STAMP_TAG, _IMAGE_MIME
 from .lrc import run_lrc
 from .naming import claim_output_path, clean_source_title, single_parent, split_shift_tags, strip_denightcore_tags, strip_empty_display_tags, strip_quality_rate_tags
@@ -43,14 +43,14 @@ def run_conversion(args, input_path, out_dir, ctx):
     if input_path.suffix.lower() == ".lrc":
         return run_lrc(args, input_path, out_dir, ctx)
 
-    # Fast skip for batch lossy reruns: predict the output name with no
+    # Fast skip for batch reruns: predict the output name with no
     # ffprobe (filename + cheap tag read) and check it against the
     # pre-listed output dir. Hits return here in microseconds; misses
     # fall through to the full resolve below (which claims exactly
     # once, so numbering is unchanged). Never prints except the skip.
     if (out_dir is not None and not args.overwrite and not args.dry_run
             and ctx.get("existing_outputs") is not None):
-        from .plan import fast_lossy_stem as _fast_stem
+        from .plan import fast_default_stem as _fast_stem
         try:
             _fast = _fast_stem(args, ctx, input_path)
         except Exception:
@@ -298,7 +298,7 @@ def run_conversion(args, input_path, out_dir, ctx):
                     return True
         return False
 
-    if not args.dry_run and pitch_plans and shutil.which("rubberband") is None:
+    if not args.dry_run and pitch_plans and which_cached("rubberband") is None:
         print(
             "Error: 'rubberband' not found. Pitch shifting (-p, -S, -D pitch)\n"
             "requires rubberband installed (apt/pacman/brew install rubberband).",
@@ -309,7 +309,7 @@ def run_conversion(args, input_path, out_dir, ctx):
     # SoX runs for every resample plan, for pitch-up pre-scales, and for
     # pitch-down settles/targets; rubberband only ever shifts pitch.
     if (not args.dry_run and _needs_sox()
-            and shutil.which("sox") is None):
+            and which_cached("sox") is None):
         print(
             "Error: 'sox' not found. Resampling (-R) and pitch rate steps\n"
             "require SoX installed (apt/pacman/brew install sox).",
