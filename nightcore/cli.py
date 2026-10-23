@@ -818,6 +818,15 @@ def main():
         if not args.dry_run:
             out_base.mkdir(parents=True, exist_ok=True)
         ctx["batch_total"] = len(files)
+        if not args.overwrite and not args.dry_run:
+            # Pre-list the output dir once so per-file skip checks are a
+            # set lookup (+ at most one stat), not a probe + stat each.
+            try:
+                ctx["existing_outputs"] = {
+                    p.name for p in out_base.iterdir() if p.is_file()}
+            except OSError:
+                ctx["existing_outputs"] = set()
+            ctx["batch_files"] = list(files)
         failed = []
         for bi, candidate in enumerate(files):
             if util._stop_requested:

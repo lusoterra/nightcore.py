@@ -119,6 +119,51 @@ def run_lrc(args, input_path, out_dir, ctx):
     # lyrics mirror the parent audio's output name, which those flags
     # shape. They change nothing about the lyrics themselves.
     copy_only = speed == 1.0
+    # Fast skip for batch reruns: mirror the parent audio's output name
+    # with no probing (same fast predictor as audio jobs). Hits return
+    # here; misses fall through to the full predict below.
+    if (out_dir is not None and not args.overwrite and not args.dry_run
+            and ctx.get("existing_outputs") is not None):
+        from .plan import fast_lossy_stem as _fast_stem
+        _parent = None
+        _bfiles = ctx.get("batch_files")
+        if _bfiles is not None:
+            _cands = [Path(p) for p in _bfiles
+                      if Path(p).stem == input_path.stem
+                      and Path(p).suffix.lower() in AUDIO_EXTS
+                      and Path(p).suffix.lower() != ".lrc"]
+            _cands.sort(key=lambda p: (
+                0 if p.suffix.lower() in _LOSSLESS_EXTS else 1, p.name))
+            _parent = _cands[0] if _cands else None
+        else:
+            _parent = find_parent_audio(input_path)
+        try:
+            if _parent is not None:
+                _ps = _fast_stem(args, ctx, _parent)
+            else:
+                _ps = (sanitize_filename(input_path.stem) if copy_only
+                       else sanitize_filename(
+                           f"{input_path.stem} [{speed!r}x]"))
+        except Exception:
+            _ps = None
+        if _ps is not None:
+            _raw = out_dir / (_ps + ".lrc")
+            _claimed = ctx.setdefault("claimed_outputs", set())
+            _cand = _raw
+            _n = 2
+            while _cand in _claimed:
+                _cand = _raw.with_name(
+                    f"{_raw.stem} ({_n}){_raw.suffix}")
+                _n += 1
+            if (_cand.name in ctx["existing_outputs"]
+                    or _cand.exists()):
+                _claimed.add(_cand)
+                print(f"Skipping {input_path.name} (output exists, "
+                      "use -y to re-encode)", file=sys.stderr)
+                ctx["skipped"] = ctx.get("skipped", 0) + 1
+                return 0
+            # Miss: fall through without claiming (the full path below
+            # claims exactly once).
     stem = predict_audio_stem(args, ctx, find_parent_audio(input_path))
     if stem is None:
         # No same-stem parent audio (or unreadable): fall back to the

@@ -43,6 +43,37 @@ def run_conversion(args, input_path, out_dir, ctx):
     if input_path.suffix.lower() == ".lrc":
         return run_lrc(args, input_path, out_dir, ctx)
 
+    # Fast skip for batch lossy reruns: predict the output name with no
+    # ffprobe (filename + cheap tag read) and check it against the
+    # pre-listed output dir. Hits return here in microseconds; misses
+    # fall through to the full resolve below (which claims exactly
+    # once, so numbering is unchanged). Never prints except the skip.
+    if (out_dir is not None and not args.overwrite and not args.dry_run
+            and ctx.get("existing_outputs") is not None):
+        from .plan import fast_lossy_stem as _fast_stem
+        try:
+            _fast = _fast_stem(args, ctx, input_path)
+        except Exception:
+            _fast = None
+        if _fast is not None:
+            _raw = out_dir / (_fast + OUTPUT_FORMATS[args.format]["ext"])
+            _claimed = ctx.setdefault("claimed_outputs", set())
+            _cand = _raw
+            _n = 2
+            while _cand in _claimed:
+                _cand = _raw.with_name(
+                    f"{_raw.stem} ({_n}){_raw.suffix}")
+                _n += 1
+            if (_cand.name in ctx["existing_outputs"]
+                    or _cand.exists()):
+                _claimed.add(_cand)
+                print(f"Skipping {input_path.name} (output exists, "
+                      "use -y to re-encode)", file=sys.stderr)
+                ctx["skipped"] = ctx.get("skipped", 0) + 1
+                return 0
+            # Miss: fall through without claiming (the full path below
+            # claims exactly once, preserving duplicate numbering).
+
     # -D inverts the shift recorded in the input's pipeline tag
     # (encoder_settings), falling back to a legacy DESCRIPTION Settings
     # line, instead of taking -s/-S/-p/-r. Filenames are untrusted (users

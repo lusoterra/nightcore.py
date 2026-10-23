@@ -423,3 +423,108 @@ def predict_audio_stem(args, ctx, audio_path):
             denightcore=naming["denightcore_bare"])
         return sanitize_filename(custom)
     return sanitize_filename(name_base + suffix)
+
+
+def _fast_inherited_shift(input_path):
+    """(speed, semitones) from tags without ffprobe, or None. Never raises.
+
+    Identity jobs (speed 1.0, no pitch) inherit the source record; the
+    full path reads it via read_shift_source (native tool or ffprobe).
+    The fast skip path only needs the shift itself, so Vorbis-family
+    files (flac/opus/ogg) are read with mutagen in-process; anything
+    else falls back to read_shift_source (cached, still cheaper than a
+    full naming resolve which also probes rates and quality).
+    """
+    from .tags import parse_stamp_shifts
+    ext = Path(input_path).suffix.lower()
+    if ext in (".flac", ".opus", ".ogg", ".oga"):
+        try:
+            if ext == ".flac":
+                from mutagen.flac import FLAC
+                audio = FLAC(str(input_path))
+                items = list((audio.tags or {}).items()) \
+                    if getattr(audio, "tags", None) else []
+            elif ext == ".opus":
+                from mutagen.oggopus import OggOpus
+                audio = OggOpus(str(input_path))
+                items = list(audio.items())
+            else:
+                from mutagen.oggvorbis import OggVorbis
+                audio = OggVorbis(str(input_path))
+                items = list(audio.items())
+        except Exception:
+            return None
+        texts = []
+        for want in ("encoder_settings", "description"):
+            for k, v in items:
+                if str(k).lower() == want:
+                    if isinstance(v, (list, tuple)):
+                        v = v[0] if v else ""
+                    texts.append(str(v))
+                    break
+        for text in texts:
+            try:
+                parsed = parse_stamp_shifts(text)
+            except Exception:
+                parsed = None
+            if parsed is not None:
+                return parsed
+        return None
+    try:
+        parsed, _ = read_shift_source(input_path)
+    except Exception:
+        return None
+    return parsed
+
+
+def fast_lossy_stem(args, ctx, audio_path):
+    """Sanitized output stem for default-named lossy jobs, or None.
+
+    No ffprobe, no packet scan: the lossy filename is
+    clean(stem) + display(diff), where diff comes from the job settings
+    alone except for speed-1.0 identity jobs, which inherit the source
+    record (read via _fast_inherited_shift). Returns None when the job
+    is not eligible (denightcore, custom autorename, resample, lossless
+    output) so callers fall back to the full resolve.
+    """
+    from .audio import semitones_from_speed
+    from .tags import display_suffix, round_diff_bare
+    if args.denightcore:
+        return None
+    if getattr(args, "autorename", None) is not None:
+        return None
+    if getattr(args, "resample", False):
+        return None
+    if not bool(OUTPUT_FORMATS.get(args.format, {}).get("lossy")):
+        return None
+    try:
+        speed = ctx["speed"]
+        combo = ctx["combo"]
+        st_signed = ctx["st_signed"]
+        eff_semitones = ctx["eff_semitones"]
+    except KeyError:
+        return None
+    pitch_mode = ((args.pitch or eff_semitones is not None)
+                  and speed != 1.0)
+    if pitch_mode:
+        if combo:
+            diff_bare = f"{speed!r}x {st_signed!r}st"
+        else:
+            st_label = (st_signed if st_signed is not None
+                        else semitones_from_speed(speed))
+            diff_bare = f"{st_label!r}st"
+    elif speed != 1.0:
+        diff_bare = f"{speed!r}x"
+    else:
+        inherited = _fast_inherited_shift(audio_path)
+        if inherited is None or (inherited[0] == 1.0
+                                 and inherited[1] == 0.0):
+            diff_bare = ""
+        else:
+            _sp, _st = inherited
+            diff_bare = ((f"{_sp!r}x" if _sp != 1.0 else "")
+                         + (" " if _sp != 1.0 and _st != 0.0 else "")
+                         + (f"{_st!r}st" if _st != 0.0 else ""))
+    suffix = display_suffix(round_diff_bare(diff_bare, 2))
+    return sanitize_filename(clean_source_title(Path(audio_path).stem)
+                             + suffix)
