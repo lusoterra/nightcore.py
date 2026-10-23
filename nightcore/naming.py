@@ -214,16 +214,33 @@ def batch_op_dir(args, op, fmt=None):
     fmt appends the codec subfolder (encodes only: std-samplerate lives
     flat inside it, denightcore/renametag take none).
     No --output-folder: ./<op>[/<fmt>]. Existing --output-folder dir X:
-    X/<op>[/<fmt>]. Missing X: X[/<fmt>] itself (the leaf takes the op
-    folder's place). Callers mkdir (except dry-run).
+    X/<op>[/<fmt>], unless X already looks like a prior output (X/<fmt>/
+    exists, or X itself is named <op>[/<fmt>]), in which case X is reused
+    verbatim so reruns stay in place. Missing X: X[/<fmt>] itself (the
+    leaf takes the op folder's place). Callers mkdir (except dry-run).
     """
     sub = f"{op}/{fmt}" if fmt else op
     if args.output_folder is None:
         return Path.cwd() / sub
     x = Path(args.output_folder)
+    direct = x / (fmt or "")
+    try:
+        if fmt is not None and direct.is_dir():
+            # Prior missing-DIR run created X/<fmt>/: X now exists, but
+            # nesting again (X/<op>/<fmt>) would abandon the first run's
+            # files and break skip-based incremental encodes.
+            return direct
+    except OSError:
+        pass
+    if x.name == op:
+        # User passed the op dir itself (.../encodes): don't double it.
+        return direct
+    if fmt is not None and x.name == fmt:
+        # User passed the final dir itself (.../encodes/opus or .../opus).
+        return x
     if x.is_dir():
         return x / sub
-    return x / (fmt or "")
+    return direct
 
 
 def single_parent(args, input_path):

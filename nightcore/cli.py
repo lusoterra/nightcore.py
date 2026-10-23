@@ -226,8 +226,10 @@ def parse_arguments():
         default=None,
         metavar="DIR",
         help="Base for batch folders (encodes/denightcore/renametag/\n"
-             "std-samplerate). Existing DIR nests them (DIR/encodes/...);\n"
-             "a missing DIR takes the folder's place (DIR/[codec]/).\n"
+             "std-samplerate). Existing DIR nests them (DIR/encodes/...),\n"
+             "unless DIR/[codec]/ already exists from a prior run (then\n"
+             "it is reused, so reruns stay in place); a missing DIR\n"
+             "takes the folder's place (DIR/[codec]/).\n"
              "Single-file runs redirect their output there instead\n"
              "(several input files share it the same way)"
     )

@@ -116,8 +116,10 @@ an error.
 .B --output-folder \fIDIR\fR
 Base for batch folders (\fIencodes/denightcore/renametag/std-samplerate\fR,
 each with a \fI[format]/\fR subfolder except where noted).
-An existing \fIDIR\fR nests them (\fIDIR/encodes/[format]/...); a missing
-\fIDIR\fR takes the folder's place (\fIDIR/[format]/...). Single-file
+An existing \fIDIR\fR nests them (\fIDIR/encodes/[format]/...), unless
+\fIDIR/[format]/\fR already exists from a prior run (then it is reused,
+so reruns stay in place); a missing \fIDIR\fR takes the folder's place
+(\fIDIR/[format]/...). Single-file
 runs redirect their output into \fIDIR\fR instead.
 .TP
 .B --in-place
