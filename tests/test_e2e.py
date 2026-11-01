@@ -268,6 +268,29 @@ def test_opus_albumartist_canonical(monkeypatch, capsys, tmp_path):
     assert "album_artist" not in fields
 
 
+def test_m4a_albumartist_passthrough(monkeypatch, capsys, tmp_path):
+    # Batch/source pass-through (no tag template): a FLAC source's
+    # ALBUMARTIST must survive into an m4a output as the aART atom.
+    # movenc drops every spelling except album_artist, so the pass-
+    # through layer rewrites it; ffmpeg's -map_metadata path already
+    # normalizes via the demuxers.
+    _require_tools("ffmpeg", "ffprobe")
+    src = tmp_path / "tone.flac"
+    _sine_flac(src)
+    subprocess.run(
+        ["metaflac", "--set-tag=ALBUMARTIST=Various Artists", str(src)],
+        check=True,
+    )
+    out = tmp_path / "tone.m4a"
+    rc, _ = _run(
+        monkeypatch, capsys,
+        [str(src), "-s", "1.2", "-F", "aac",
+         "--lossy-opts=-b:a 64k", "-o", str(out)],
+    )
+    assert rc == 0
+    assert read_format_tag(out, "album_artist") == "Various Artists"
+
+
 def test_mp3_compilation_tcmp(monkeypatch, capsys, tmp_path):
     # Template compilation= must land as a native TCMP frame, not a
     # generic TXXX duplicate.

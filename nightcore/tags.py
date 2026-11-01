@@ -696,6 +696,53 @@ def fold_album_artist(tags):
     return out
 
 
+# movenc stores the album artist under the exact "album_artist" key
+# (aART atom); these alternate spellings must be rewritten to it for
+# m4a/mp4 outputs or movenc drops them silently. Same direction the
+# template layer's _TAG_ALIASES already applies, mirrored for the
+# source-tag pass-through (which passes stored-case keys verbatim).
+_MOVENC_ALBUM_ARTIST = "album_artist"
+_MOVENC_ALBUM_ARTIST_FALLBACKS = {"albumartist", "album artist"}
+
+
+def movenc_tag_key(key):
+    """Stored-case tag key rewritten to movenc's spelling, or as-is.
+
+    movenc (m4a/mp4) recognizes only the exact album_artist key for the
+    aART atom and silently drops every other album-artist spelling
+    (ALBUMARTIST from Vorbis comments, bare albumartist, "Album
+    Artist"), so pass-through tags need this remap there; every other
+    container keeps the source's spelling (mp3 stores a TXXX frame,
+    FLAC/Vorbis store the comment verbatim), which is why the remap is
+    mov-only. The match is case-insensitive on both sides (movenc
+    resolves keys case-insensitively). Never raises.
+    """
+    if str(key).lower() in _MOVENC_ALBUM_ARTIST_FALLBACKS:
+        return _MOVENC_ALBUM_ARTIST
+    return key
+
+
+def movenc_tag_map(tags):
+    """Mapping with every key run through movenc_tag_key.
+
+    Several album-artist spellings collapse onto album_artist: a key
+    already spelled album_artist wins (same precedence as
+    fold_album_artist, mirrored), else the first spelling seen wins.
+    Never raises.
+    """
+    exact = any(str(k).lower() == _MOVENC_ALBUM_ARTIST for k in tags)
+    out = {}
+    for key, value in tags.items():
+        low = str(key).lower()
+        if exact and low in _MOVENC_ALBUM_ARTIST_FALLBACKS:
+            continue
+        new = movenc_tag_key(key)
+        if new in out and new != key:
+            continue  # first fallback spelling wins a collision
+        out[new] = value
+    return out
+
+
 def flac_comment_wants(tmpl, ff_extra, input_path, out_ext, no_delete):
     """(want_comment, want_description) for the metaflac fix pass.
 

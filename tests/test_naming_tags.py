@@ -344,6 +344,21 @@ def test_fold_album_artist():
     assert fold_album_artist({"artist": "V"}) == {"artist": "V"}
 
 
+def test_movenc_tag_map():
+    from nightcore.tags import movenc_tag_map
+    # Every alternate album-artist spelling collapses onto album_artist
+    # (movenc only keeps that exact key), and the source's own
+    # album_artist spelling wins when both coexist.
+    assert movenc_tag_map({"ALBUMARTIST": "V"}) == {"album_artist": "V"}
+    assert movenc_tag_map({"Album Artist": "V"}) == {"album_artist": "V"}
+    assert movenc_tag_map({"albumartist": "V"}) == {"album_artist": "V"}
+    assert movenc_tag_map(
+        {"album_artist": "Y", "albumartist": "X"}) == {"album_artist": "Y"}
+    assert movenc_tag_map(
+        {"album_artist": "Y", "Album Artist": "X"}) == {"album_artist": "Y"}
+    assert movenc_tag_map({"artist": "V"}) == {"artist": "V"}
+
+
 def test_template_keys_lowercased(tmp_path):
     from nightcore.tags import apply_template_tags, parse_tag_template
     tmpl_file = tmp_path / "t.tmpl"

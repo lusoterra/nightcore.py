@@ -10,7 +10,7 @@ import threading
 
 from . import util
 from .constants import CLI_SHORT_OPTS, FFMPEG_ONLY_OPTS, _DIALECT_EXAMPLES
-from .tags import read_all_tags
+from .tags import movenc_tag_map, read_all_tags
 from .util import run_tool, say
 
 def run_rubberband(input_wav, output_wav, semitones, extra_params):
@@ -697,6 +697,13 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
     default; lossy outputs keep the encoder's tags unless a template
     curates every tag).
     """
+    # movenc (m4a/mp4) recognizes only the exact album_artist metadata
+    # key (aART atom); every other spelling is dropped silently, so all
+    # metadata bound for those containers goes through movenc_tag_map
+    # below. The -map_metadata paths need no remap: their keys come
+    # from the demuxers, which already normalize (Vorbis ALBUMARTIST
+    # and ID3 TPE2 both surface as album_artist).
+    mov_out = str(output_path).lower().endswith((".m4a", ".mp4"))
     ffmpeg_cmd = [
         "ffmpeg",
         "-nostdin",
@@ -742,13 +749,26 @@ def run_ffmpeg(input_path, output_path, audio_filter, codec, title, overwrite,
                       else input_path)
         fmt_tags, stream_tags = read_all_tags(tag_source)
         banned = {t.lower() for t in drop_tags}
+        if mov_out:
+            # movenc only knows the exact album_artist key: pass-through
+            # tags ride in stored case, so every other spelling would be
+            # silently dropped from the aART atom.
+            fmt_tags = movenc_tag_map(fmt_tags)
+            stream_tags = movenc_tag_map(stream_tags)
         for key, value in fmt_tags.items():
             if key.lower() not in banned:
                 ffmpeg_cmd += ["-metadata", f"{key}={value}"]
         for key, value in stream_tags.items():
             if key.lower() not in banned:
                 ffmpeg_cmd += ["-metadata:s:a", f"{key}={value}"]
-    for key, value in (extra_tags or {}).items():
+    extra = extra_tags or {}
+    if mov_out:
+        # Same remap for explicit tags (a no-op for template runs --
+        # their albumartist already took the movenc alias at the
+        # template layer -- but it covers any other spelling, e.g. a
+        # literal "Album Artist=" template entry).
+        extra = movenc_tag_map(extra)
+    for key, value in extra.items():
         ffmpeg_cmd += ["-metadata", f"{key}={value}"]
     audio_filter_chain = audio_filter
     if dither is not None:
