@@ -443,17 +443,18 @@ def select_lossy_backend(fmt, dialect):
         if dialect is None and version is not None:
             say(f"Encoding AAC with {version}")
             return {"kind": "qaac"}
+        if ffmpeg_has_encoder("libfdk_aac"):
+            if dialect is None:
+                say("Encoding AAC with ffmpeg libfdk_aac")
+            else:
+                say(f"Encoding AAC with ffmpeg libfdk_aac{forced}")
+            return {"kind": "ffmpeg", "encoder": "libfdk_aac"}
         if ffmpeg_has_encoder("aac"):
             if dialect is None:
-                redist = qaac_redist_hint()
-                detail = (f"qaac is installed but unusable ({redist})"
-                          if redist else
-                          "qaac not found (use qaac for quality)")
-                print(f"Warning: {detail}, AAC via ffmpeg sounds worse",
-                      file=sys.stderr)
+                say("Encoding AAC with ffmpeg aac")
             else:
-                say(f"Encoding AAC with ffmpeg{forced}")
-            return {"kind": "ffmpeg"}
+                say(f"Encoding AAC with ffmpeg aac{forced}")
+            return {"kind": "ffmpeg", "encoder": "aac"}
         if version is not None:
             say(f"Encoding AAC with {version}{forced}")
             return {"kind": "qaac"}

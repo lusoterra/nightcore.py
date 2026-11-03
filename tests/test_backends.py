@@ -112,3 +112,35 @@ def test_mp3_forced_dialect_kept(monkeypatch):
 def test_mp3_postprocess_no_mutagen(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "mutagen.mp3", None)
     assert mp3_postprocess(tmp_path / "x.mp3", "1") is False
+
+
+def test_aac_backend_prefers_qaac(monkeypatch):
+    from nightcore import backends
+    monkeypatch.setattr(backends, "find_qaac", lambda: "qaac 2.85")
+    monkeypatch.setattr(backends, "ffmpeg_has_encoder", lambda name: True)
+    assert backends.select_lossy_backend("aac", None) == {"kind": "qaac"}
+
+
+def test_aac_backend_falls_back_to_fdk(monkeypatch):
+    from nightcore import backends
+    monkeypatch.setattr(backends, "find_qaac", lambda: None)
+    monkeypatch.setattr(backends, "ffmpeg_has_encoder",
+                        lambda name: name == "libfdk_aac")
+    assert backends.select_lossy_backend("aac", None) == {
+        "kind": "ffmpeg", "encoder": "libfdk_aac"}
+
+
+def test_aac_backend_falls_back_to_native(monkeypatch):
+    from nightcore import backends
+    monkeypatch.setattr(backends, "find_qaac", lambda: None)
+    monkeypatch.setattr(backends, "ffmpeg_has_encoder",
+                        lambda name: name == "aac")
+    assert backends.select_lossy_backend("aac", None) == {
+        "kind": "ffmpeg", "encoder": "aac"}
+
+
+def test_aac_backend_none_available(monkeypatch):
+    from nightcore import backends
+    monkeypatch.setattr(backends, "find_qaac", lambda: None)
+    monkeypatch.setattr(backends, "ffmpeg_has_encoder", lambda name: False)
+    assert backends.select_lossy_backend("aac", None) is None

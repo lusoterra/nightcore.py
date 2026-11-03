@@ -714,7 +714,11 @@ def main():
         if backend is None:
             return 127
         if not lossy_opts:
-            default = LOSS_DEFAULTS[(args.format, backend["kind"])]
+            if (args.format == "aac" and backend["kind"] == "ffmpeg"
+                    and backend.get("encoder") == "libfdk_aac"):
+                default = ["-vbr", "5"]
+            else:
+                default = LOSS_DEFAULTS[(args.format, backend["kind"])]
             if default is None:
                 print("Error: ffmpeg AAC has no default (it isn't that "
                       "great); pass explicit --lossy-opts, e.g. "
