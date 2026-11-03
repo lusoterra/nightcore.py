@@ -981,7 +981,7 @@ _CHECK_OPTIONAL_CLI = ("lame", "opusenc", "qaac")
 # Exact tag readers (callers fall back to ffprobe without them).
 _CHECK_TAG_READERS = ("opusinfo", "vorbiscomment")
 # ffmpeg-bundled encoders probed for the readiness footer.
-_CHECK_FFMPEG_ENCODERS = ("libmp3lame", "libopus", "aac", "alac",
+_CHECK_FFMPEG_ENCODERS = ("libmp3lame", "libopus", "libfdk_aac", "aac", "alac",
                           "flac")
 
 
@@ -1121,8 +1121,10 @@ def run_check():
     print(_ready_line("opus", ready_cli.get("opusenc"),
                       "opusenc", enc_have.get("libopus"),
                       "libopus"))
+    aac_ff = "libfdk_aac" if enc_have.get("libfdk_aac") else "aac"
     print(_ready_line("aac", ready_cli.get("qaac"),
-                      "qaac", enc_have.get("aac"), "aac"))
+                      "qaac", enc_have.get("aac") or enc_have.get("libfdk_aac"),
+                      aac_ff))
     print(_ready_line("alac", ready_cli.get("qaac"),
                       "qaac", enc_have.get("alac"), "alac"))
     print(f"flac encode: "
