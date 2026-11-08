@@ -25,6 +25,12 @@ of Nightcore. You can, of course, slow down music with it as well.
 - Share-friendly lossy encodes (-F mp3/opus/aac) - you pick the quality, the script picks the best encoder available
 - Convert whole folders with --batch: reruns skip finished files, -y redo them all
 - Retime `.lrc` lyrics to match sped-up audio; they land next to the music with the same name
+- Speed a video up like a song (`nightcore meme.mp4 -s 1.1 -F mp4`): video and
+  audio move together (`setpts` + `asetrate`, pitch follows speed, never preserved),
+  source resolution is kept, re-encoded to h264/AV1/VP9 + your audio codec.
+  `-F` takes a preset (`mp4` = h264+aac, `mp4alac` = h264+alac, `mkv` = h264+flac,
+  `webm` = vp9+opus) or a reversible pair `h264/aac` (also `aac/h264`, `av1/flac` guesses mkv).
+  Embedded subtitles are retimed; a sidecar `.lrc` or `.ass` lands as `in [1.1x].<ext>`.
 - `--mkvid`: remux one song (+ optional `.lrc` lyrics, + image) into a
   1080p YouTube video. The image is letterboxed/pillarboxed into 1920x1080
   with black bars (never stretched) and the audio rides as FLAC in mkv,

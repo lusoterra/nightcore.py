@@ -27,6 +27,14 @@ automatically to be chosen to be the smallest standard frequency that's still
 higher than the frequency that FFmpeg's `asetrate` changed.
 .PP
 Most of the flags here should cover 99% of all nightcore tracks from the 2000s.
+.PP
+A video input is sped up like an audio one: \fBsetpts\fR moves the video
+timeline, the audio rides the same \fBasetrate\fR chain as a song (pitch
+follows speed, never preserved), the resolution is kept and the picture is
+re-encoded to h264 (or AV1/VP9) with the chosen audio codec. Embedded
+subtitles are retimed by the same factor; a sidecar \fB.lrc\fR or \fB.ass\fR
+lands as a retimed copy next to the output (\fB.in [1.1x].ass\fR style).
+\fB--mkvid\fR stays the classic still-image YouTube remux.
 .SH OPTIONS
 .TP
 .B -s, --speed \fISPEED\fR
@@ -60,9 +68,13 @@ intermediate first).
 .TP
 .B -F, --format \fIFMT\fR
 Output format: \fBflac\fR (default), \fBalac\fR, \fBmp3\fR,
-\fBopus\fR, \fBaac\fR (.m4a); \fBmkv\fR (default), \fBmp4\fR or
-\fBmp4alac\fR with
-\fB--mkvid\fR (which picks its own container).
+\fBopus\fR, \fBaac\fR (.m4a). For a video input (one with a real
+video stream, not cover art): preset \fBmp4\fR (h264+aac), \fBmp4alac\fR
+(h264+alac), \fBmkv\fR (h264+flac), \fBwebm\fR (vp9+opus), or a
+reversible pair such as \fBh264/aac\fR or \fBaac/h264\fR (video/audio
+in either order, container guessed from the codecs, e.g. \fBav1/flac\fR
+guesses mkv). \fBmkv\fR (default), \fBmp4\fR or \fBmp4alac\fR with
+\fB--mkvid\fR (classic still-image video).
 Automatic quality defaults exist only for lossless output, tuned for most
 compression (FLAC level 12; ALAC has no knobs). Lossy outputs prefer
 the best encoder -- MP3 via lame CLI (libmp3lame fallback), Opus via
@@ -353,6 +365,15 @@ Retime lyrics for the sped-up audio:
 .PP
 .RS
 nightcore song.lrc -s 1.2 -y
+.RE
+.PP
+Speed a video up (video and audio together, subtitles retimed;
+\fBh264/aac\fR and \fBaac/h264\fR are the same):
+.PP
+.RS
+nightcore meme.mp4 -s 1.1 -F h264/aac -y
+nightcore meme.mp4 -s 1.1 -F mp4 -y
+nightcore anime.mkv -s 1.1 -F av1/flac -y
 .RE
 .PP
 Preview names for a bulk rename:
