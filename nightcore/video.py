@@ -62,6 +62,45 @@ def guess_container(vcodec, acodec):
     return "mkv", ".mkv"
 
 
+EXT_TO_VIDEO_PRESET = {
+    ".mp4": "mp4",
+    ".mkv": "mkv",
+    ".webm": "webm",
+}
+
+# Container checked against an explicit -F pair/preset: only these
+# codecs can ride in each container (others fail loudly instead of
+# surfacing as ffmpeg's "Error opening output file ... Invalid argument").
+SUPPORTED_CONTAINER_CODECS = {
+    ".mp4": ({"h264", "avc", "hevc", "h265"}, {"aac", "alac", "mp3"}),
+    ".mkv": ({"h264", "avc", "hevc", "h265", "av1", "vp9", "vp8"},
+             {"flac", "alac", "aac", "opus", "vorbis", "mp3"}),
+    ".webm": ({"vp9", "vp8", "av1"}, {"opus", "vorbis"}),
+}
+
+
+def default_video_format_from_ext(ext):
+    """Preset name defaulted from an -o container extension, or None."""
+    return EXT_TO_VIDEO_PRESET.get(ext.lower())
+
+
+EXT_TO_AUDIO_FORMAT = {
+    ".flac": "flac",
+    ".mp3": "mp3",
+    ".opus": "opus",
+    ".m4a": "alac",
+}
+
+# Audio formats we mux: which -o extensions each -F may land in.
+AUDIO_FORMAT_EXTS = {
+    "flac": {".flac", ".mkv"},
+    "alac": {".m4a", ".mp4"},
+    "mp3": {".mp3"},
+    "opus": {".opus", ".mkv", ".webm"},
+    "aac": {".m4a", ".mp4"},
+}
+
+
 def parse_video_format(token):
     """Resolve a -F token to (vcodec, acodec, container_key, ext) or None.
 

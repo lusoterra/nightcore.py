@@ -592,6 +592,60 @@ def main():
         from .mkvid import run_mkvid
         return run_mkvid(args)
 
+    # -o container defaults: when -F was not passed explicitly, guess
+    # the codec set from the -o extension instead of defaulting to
+    # flac; when it was, an unsupported combination fails loudly.
+    _explicit_format = any(
+        t == "-F" or t == "--format" or t.startswith("--format=")
+        or t.startswith("-F") and t not in ("-F",)
+        for t in sys.argv[1:])
+    _out_ext = Path(args.output).suffix.lower() if args.output else None
+    if _out_ext and not _explicit_format:
+        from .video import (
+            EXT_TO_AUDIO_FORMAT,
+            EXT_TO_VIDEO_PRESET,
+            default_video_format_from_ext,
+        )
+        try:
+            from .audio import has_real_video as _has_vid
+            _first = next((Path(p) for p in args.input
+                           if Path(p).suffix.lower() not in (".lrc", ".ass")),
+                          None)
+            _is_vid = bool(_first and _first.is_file() and _has_vid(_first))
+        except Exception:
+            _is_vid = False
+        if _is_vid and default_video_format_from_ext(_out_ext):
+            args.format = default_video_format_from_ext(_out_ext)
+        elif _out_ext in EXT_TO_AUDIO_FORMAT:
+            args.format = EXT_TO_AUDIO_FORMAT[_out_ext]
+        elif _out_ext == ".mp4" and not _is_vid:
+            args.format = "aac"
+        elif _out_ext == ".mkv" and not _is_vid:
+            args.format = "flac"
+        elif _out_ext == ".webm" and not _is_vid:
+            args.format = "opus"
+    if _explicit_format and _out_ext:
+        from .video import (
+            AUDIO_FORMAT_EXTS,
+            SUPPORTED_CONTAINER_CODECS,
+            parse_video_format,
+        )
+        _vp = parse_video_format(args.format)
+        if _vp is not None:
+            _v, _a, _key, _ext = _vp
+            if _out_ext != _ext:
+                print(f"Error: -F {args.format!r} needs a {_ext} output, "
+                      f"not {_out_ext} (supported containers for "
+                      f"{_v}+{_a}: {_ext})", file=sys.stderr)
+                return 1
+        elif args.format in AUDIO_FORMAT_EXTS:
+            if _out_ext not in AUDIO_FORMAT_EXTS[args.format]:
+                print(f"Error: -F {args.format!r} cannot ride in a {_out_ext} "
+                      f"output (supported: "
+                      f"{', '.join(sorted(AUDIO_FORMAT_EXTS[args.format]))})",
+                      file=sys.stderr)
+                return 1
+
     if args.format not in OUTPUT_FORMATS:
         from .video import parse_video_format, run_video_conversion
         if parse_video_format(args.format) is not None:

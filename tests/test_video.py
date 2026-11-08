@@ -131,6 +131,34 @@ def test_video_av1_flac_pair(monkeypatch, tmp_path):
     assert ("audio", "flac") in kinds
 
 
+def test_video_default_from_o_extension(monkeypatch, tmp_path):
+    _require("ffmpeg", "ffprobe")
+    src = tmp_path / "in.mp4"
+    _video(src)
+    out = tmp_path / "friend.mp4"
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.1", "-o", str(out),
+               "--lossy-opts=-b:a 128k", "-y"])
+    assert rc == 0
+    kinds = {(s["codec_type"], s["codec_name"])
+             for s in _probe(out)["streams"]}
+    assert ("video", "h264") in kinds
+    assert ("audio", "aac") in kinds
+
+
+def test_video_unsupported_combo_fails(monkeypatch, tmp_path, capsys):
+    _require("ffmpeg", "ffprobe")
+    src = tmp_path / "in.mp4"
+    _video(src)
+    out = tmp_path / "out.mp4"
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.1", "-F", "av1/flac",
+               "-y", "-o", str(out)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "needs a .mkv output, not .mp4" in err
+
+
 def test_mkvid_still_rejects_speed(monkeypatch, tmp_path):
     _require("ffmpeg", "ffprobe", "metaflac")
     src = tmp_path / "song.flac"
