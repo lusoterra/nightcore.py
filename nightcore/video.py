@@ -28,6 +28,8 @@ from .audio import (
 from .backends import (
     detect_lossy_dialect,
     ffmpeg_has_encoder,
+    run_lame,
+    run_opusenc,
     run_qaac_alac,
     run_rubberband,
     run_sox_rate,
@@ -290,6 +292,10 @@ def run_video_conversion(args, input_path, out_dir, ctx):
                 f"{backend['kind']}: {' '.join(default)}")
     use_qaac = (is_lossy_audio and backend is not None
                 and backend.get("kind") == "qaac" and acodec == "aac")
+    use_opusenc = (is_lossy_audio and backend is not None
+                   and backend.get("kind") == "opusenc" and acodec == "opus")
+    use_lame = (is_lossy_audio and backend is not None
+                and backend.get("kind") == "lame" and acodec == "mp3")
 
     try:
         duration_factor, pitch_extra, sample_rate = _speedup_plan(args, input_path)
@@ -356,13 +362,22 @@ def run_video_conversion(args, input_path, out_dir, ctx):
 
     tempdir = None
     try:
-        aac_tmp = None
+        cli_tmp = None
+
+        def _encode_cli_tmp(wav_path, tmp_path):
+            if use_opusenc:
+                say(f"  opusenc encode opus ({' '.join(lossy_opts)})")
+                run_opusenc(wav_path, tmp_path, {}, None, lossy_opts)
+            elif use_lame:
+                say(f"  lame encode mp3 ({' '.join(lossy_opts)})")
+                run_lame(wav_path, tmp_path, lossy_opts)
+
         if use_qaac and n_audio:
             tempdir = Path(tempfile.mkdtemp(prefix="nightcore-video-"))
             _codec, _br, _bits, _fbr, _enc = get_audio_info(input_path)
             depth_pcm = wav_codec_for(_bits)
             tmp_wav = tempdir / "video.wav"
-            aac_tmp = tempdir / "video-aac.m4a"
+            cli_tmp = tempdir / "video-aac.m4a"
             say(f"  ffmpeg decode -> {depth_pcm} (sped {duration_factor:g}x)")
             decode_cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(input_path),
                           "-map", "0:a", "-c:a", depth_pcm]
@@ -377,7 +392,34 @@ def run_video_conversion(args, input_path, out_dir, ctx):
             decode_cmd += [str(tmp_wav)]
             run_tool(decode_cmd)
             say(f"  qaac encode aac ({' '.join(lossy_opts)})")
-            run_qaac_alac(tmp_wav, aac_tmp, alac=False, extra_args=lossy_opts)
+            run_qaac_alac(tmp_wav, cli_tmp, alac=False, extra_args=lossy_opts)
+            try:
+                tmp_wav.unlink()
+            except OSError:
+                pass
+
+        # opusenc/lame CLI encoders cannot ride the ffmpeg filtergraph
+        # (their flags are not ffmpeg flags), so - like qaac - they get
+        # a temp file that is stream-copied into the final mux. Plain
+        # speed decodes straight to the temp; pitch/resample goes
+        # through the SoX/rubberband chain below first.
+        need_sox_preview = (pitch_extra != 1.0
+                            or getattr(args, "resample", False))
+        if (use_opusenc or use_lame) and n_audio and cli_tmp is None \
+                and not need_sox_preview:
+            if tempdir is None:
+                tempdir = Path(tempfile.mkdtemp(prefix="nightcore-video-"))
+            tmp_wav = tempdir / "video.wav"
+            cli_tmp = tempdir / ("video.opus" if use_opusenc
+                                 else "video.mp3")
+            say(f"  ffmpeg decode -> pcm_f32le (sped {duration_factor:g}x)")
+            decode_cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(input_path),
+                          "-map", "0:a", "-c:a", "pcm_f32le"]
+            if audio_chain:
+                decode_cmd += ["-af", audio_chain]
+            decode_cmd += [str(tmp_wav)]
+            run_tool(decode_cmd)
+            _encode_cli_tmp(tmp_wav, cli_tmp)
             try:
                 tmp_wav.unlink()
             except OSError:
@@ -389,7 +431,7 @@ def run_video_conversion(args, input_path, out_dir, ctx):
         # in the final mux; FLAC keeps its weird rate unless -R.
         processed_wav = None
         need_sox = (pitch_extra != 1.0 or getattr(args, "resample", False))
-        if need_sox and n_audio and aac_tmp is None:
+        if need_sox and n_audio and cli_tmp is None:
             from .backends import tame_hot_wav, which_cached
             from .audio import semitones_from_speed
             if which_cached("rubberband") is None and pitch_extra != 1.0:
@@ -456,6 +498,13 @@ def run_video_conversion(args, input_path, out_dir, ctx):
                     run_sox_rate(cur, t5, resample_target)
                     cur = t5
             processed_wav = cur
+            if (use_opusenc or use_lame) and cli_tmp is None:
+                cli_tmp = tempdir / ("video.opus" if use_opusenc
+                                     else "video.mp3")
+                _encode_cli_tmp(processed_wav, cli_tmp)
+                # The CLI temp now carries the audio (stream-copied
+                # below); the processed WAV must not also be a mux input.
+                processed_wav = None
 
         v_parts = "format=yuv420p"
         fc = []
@@ -466,27 +515,27 @@ def run_video_conversion(args, input_path, out_dir, ctx):
         cmd = ["ffmpeg", "-nostdin",
                "-y" if args.overwrite else "-n",
                "-i", str(input_path)]
-        if aac_tmp is not None:
-            cmd += ["-i", str(aac_tmp)]
+        if cli_tmp is not None:
+            cmd += ["-i", str(cli_tmp)]
         audio_input_idx = 0
         processed_idx = None
         if processed_wav is not None:
             audio_input_idx = len(cmd) // 2  # not used; compute below
-            processed_idx = 1 + (1 if aac_tmp is not None else 0)
+            processed_idx = 1 + (1 if cli_tmp is not None else 0)
             cmd += ["-i", str(processed_wav)]
             # Shifts cover index below.
         cover_flag = ctx.get("cover_flag")
         cover_idx = None
         if cover_flag is not None and container_key != "webm":
-            cover_idx = 1 + (1 if aac_tmp is not None else 0) + (
+            cover_idx = 1 + (1 if cli_tmp is not None else 0) + (
                 1 if processed_wav is not None else 0)
             cmd += ["-i", str(cover_flag)]
         audio_labels = []
         for i in range(n_audio):
-            if aac_tmp is not None or processed_wav is not None:
-                # qaac output is stream-copied; processed.wav is already
-                # the final audio (paced sox/rubberband chain). Neither
-                # may ride the filtergraph (streamcopy rule).
+            if cli_tmp is not None or processed_wav is not None:
+                # qaac/opusenc/lame output is stream-copied; processed.wav
+                # is already the final audio (paced sox/rubberband chain).
+                # Neither may ride the filtergraph (streamcopy rule).
                 continue
             label = f"aout{i}"
             audio_labels.append(label)
@@ -498,7 +547,7 @@ def run_video_conversion(args, input_path, out_dir, ctx):
         cmd += ["-map", "[vout]"]
         for label in audio_labels:
             cmd += ["-map", f"[{label}]"]
-        if aac_tmp is not None:
+        if cli_tmp is not None:
             cmd += ["-map", "1:a:0"]
         elif processed_wav is not None:
             cmd += ["-map", f"{processed_idx}:a:0"]
@@ -517,7 +566,7 @@ def run_video_conversion(args, input_path, out_dir, ctx):
         else:  # vp9 / vp8
             cmd += ["-c:v", video_enc, "-b:v", "0", "-crf", "30",
                     "-deadline", "good", "-pix_fmt", "yuv420p"]
-        if aac_tmp is not None:
+        if cli_tmp is not None:
             cmd += ["-c:a", "copy"]
         elif acodec == "aac" and backend and backend.get("kind") == "ffmpeg":
             enc = backend.get("encoder") or "aac"

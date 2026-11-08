@@ -92,6 +92,33 @@ def test_video_preset_mkv(monkeypatch, tmp_path):
     assert ("audio", "flac") in kinds
 
 
+def test_video_preset_webm_opus_defaults(monkeypatch, tmp_path):
+    """WebM preset with no --lossy-opts uses the opusenc default.
+
+    Regression: the opusenc default (--bitrate 128) used to be handed to
+    ffmpeg's libopus, which rejects it as an unknown option. The audio
+    now encodes through a CLI temp file that is stream-copied into the
+    mux (unless opusenc is missing and the libopus fallback kicks in).
+    """
+    _require("ffmpeg", "ffprobe")
+    from nightcore.backends import ffmpeg_has_encoder
+    if not ffmpeg_has_encoder("libvpx-vp9"):
+        pytest.skip("libvpx-vp9 unavailable")
+    src = tmp_path / "in.mp4"
+    _video(src)
+    out = tmp_path / "out.webm"
+    # No --lossy-opts: the default (opusenc --bitrate when present,
+    # libopus -b:a otherwise) must mux without a flag-dialect error.
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.2", "-F", "webm", "-y", "-o", str(out)])
+    assert rc == 0
+    data = _probe(out)
+    assert float(data["format"]["duration"]) == pytest.approx(4 / 1.2, abs=0.2)
+    kinds = {(s["codec_type"], s["codec_name"]) for s in data["streams"]}
+    assert ("video", "vp9") in kinds
+    assert ("audio", "opus") in kinds
+
+
 def test_ass_sidecar_retimed(monkeypatch, tmp_path):
     _require("ffmpeg", "ffprobe")
     src = tmp_path / "in.mp4"
