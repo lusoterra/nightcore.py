@@ -123,7 +123,12 @@ uses \fI=\fR, else it eats the input filename as its template.
 .B -o, --output \fIFILE\fR
 Override the output filename (extension required, e.g. \fI-o mix.mp3\fR;
 used verbatim). Single-file runs only: \fI--batch\fR + \fI-o\fR is
-an error.
+an error. Without an explicit \fB-F\fR the codec set is guessed from
+the \fB-o\fR container (\fB.mp4\fR video defaults to h264+aac, \fB.mkv\fR to
+h264+flac, \fB.webm\fR to vp9+opus, audio containers to their format);
+with an explicit \fB-F\fR an unsupported codec/container combo
+(e.g. \fBav1/flac\fR with \fB-o x.mp4\fR) fails loudly instead of
+surfacing as an ffmpeg mux error.
 .TP
 .B --output-folder \fIDIR\fR
 Base for batch folders (\fIencodes/denightcore/renametag/std-samplerate\fR,
