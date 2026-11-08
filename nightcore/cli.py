@@ -486,6 +486,24 @@ def main():
     util._enable_windows_vt()
     args = parse_arguments()
     util._quiet = args.quiet
+    # -F is case-insensitive: FLAC == flac, MP4 == mp4, H264/AAC == h264/aac.
+    args.format = str(args.format).lower()
+
+    # --check/--stats/--pitch-diff/--speed-diff are print-and-exit modes;
+    # combining two of them is nonsense (previously first-wins silently).
+    _exit_modes = [bool(args.check),
+                   args.pitch_diff is not None,
+                   args.speed_diff is not None,
+                   args.stats is not None]
+    if sum(_exit_modes) > 1:
+        print("Error: --check, --stats, --pitch-diff and --speed-diff are "
+              "mutually exclusive (each prints and exits)", file=sys.stderr)
+        return 1
+    if (args.pitch_diff is not None or args.speed_diff is not None) \
+            and args.input:
+        print("Error: --pitch-diff/--speed-diff are calculators (no "
+              "conversion: no input files)", file=sys.stderr)
+        return 1
 
     if args.check:
         return run_check()
@@ -548,6 +566,33 @@ def main():
             max_depth = args.recurse
         return run_stats(args.stats, max_depth=max_depth)
 
+    # Shift-amount sanity: -p/-S with no amount are no-ops that used to
+    # pass silently as identity transcodes (or died on the overwrite
+    # guard with a confusing message). Fail loudly instead.
+    if args.semitones is not None and args.semitones == 0:
+        print("Error: -S/--semitones must be non-zero "
+              "(0 st is no pitch shift)", file=sys.stderr)
+        return 1
+    if args.pitch and args.semitones is None and args.speed == 1.0 \
+            and not args.denightcore:
+        print("Error: -p/--pitch needs an amount from -s/--speed or "
+              "-S/--semitones (it only modifies that shift)",
+              file=sys.stderr)
+        return 1
+    # -D reads the shift from the stamp, so any explicit shift flag is
+    # nonsense. This duplicates the per-file check in run_conversion so
+    # video jobs (which have no such check) fail loudly too, and so all
+    # paths fail before probing/encoding.
+    if args.denightcore:
+        for flag, bad in (("-s/--speed", args.speed != 1.0),
+                          ("-S/--semitones", args.semitones is not None),
+                          ("-p/--pitch", args.pitch),
+                          ("-r/--reciprocal", args.reciprocal)):
+            if bad:
+                print(f"Error: --denightcore cannot be combined with {flag} "
+                      "(it reads the shift from the stamp tag)",
+                      file=sys.stderr)
+                return 1
 
     cover_flag = None
     if args.cover:
@@ -651,6 +696,18 @@ def main():
         if parse_video_format(args.format) is not None:
             # Video input goes through the main conversion path: -s/-S
             # etc. speed video + audio together, mkvid stays classic.
+            _vp_now = parse_video_format(args.format)
+            if _vp_now is not None:
+                _va = _vp_now[1]
+                _v_lossy = _va in ("aac", "opus", "mp3")
+                if args.lossy_opts and not _v_lossy:
+                    print("Warning: --lossy-opts ignored for lossless output",
+                          file=sys.stderr)
+                if args.denightcore and _v_lossy:
+                    print("Error: -D/--denightcore needs a lossless output "
+                          "(re-encoding to lossy would lose quality over time)",
+                          file=sys.stderr)
+                    return 1
             if args.batch is not None:
                 print("Error: --batch is not supported for video speedup "
                       "(pass one video file)", file=sys.stderr)

@@ -66,10 +66,10 @@ def guess_container(vcodec, acodec):
     a = acodec.lower()
     if a == "flac":
         return "mkv", ".mkv"
-    if v in ("vp9", "vp8") and a in ("opus", "vorbis"):
-        return "webm", ".webm"
     if v in ("vp9", "vp8", "av1") and a in ("opus", "vorbis"):
         return "webm", ".webm"
+    if a in ("opus", "vorbis"):
+        return "mkv", ".mkv"
     if a == "alac":
         return "mp4", ".mp4"
     if v in ("h264", "avc", "hevc", "h265"):
