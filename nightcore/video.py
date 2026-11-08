@@ -479,9 +479,12 @@ def run_video_conversion(args, input_path, out_dir, ctx):
                 slots={"diff": _diff, "quality": "", "resample": "",
                        "denightcore": ""})
             from .naming import clean_source_title
-            title = compute_new_title(
-                tmpl, title_base, clean_source_title(original_title),
-                "", diff=_diff, title_verbatim=title_verbatim)
+            if title_verbatim:
+                title = title_base
+            else:
+                title = compute_new_title(
+                    tmpl, title_base, clean_source_title(_orig_title),
+                    "", diff=_diff)
             tags = read_tags(input_path, "title", "artist", "album", "date",
                              "genre", "comment", "description")
             if not getattr(args, "no_delete_tags", False):

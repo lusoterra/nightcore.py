@@ -245,6 +245,25 @@ def test_video_tag_template_applied(monkeypatch, tmp_path):
     assert fmt_tags.get("artist") == "Video Artist"
 
 
+def test_video_title_gets_nightcore_suffix(monkeypatch, tmp_path):
+    _require("ffmpeg", "ffprobe")
+    src = tmp_path / "in.mp4"
+    _video(src)
+    monkeypatch.chdir(tmp_path)
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.1", "-F", "mkv", "--autorename", "-y"])
+    assert rc == 0
+    out = next(p for p in tmp_path.glob("*.mkv"))
+    raw = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format_tags",
+         "-of", "json", str(out)],
+        check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace").stdout
+    import json
+    tags = json.loads(raw)["format"]["tags"]
+    assert "[Nightcore 1.1x]" in tags["title"]
+
+
 def test_mkvid_still_rejects_speed(monkeypatch, tmp_path):
     _require("ffmpeg", "ffprobe", "metaflac")
     src = tmp_path / "song.flac"
