@@ -41,7 +41,17 @@ from .constants import (
     VIDEO_FORMATS,
 )
 from .naming import single_parent
-from .tags import read_shift_source, read_tags, sanitize_filename, tool_stamp
+from .tags import (
+    apply_template_tags,
+    compute_new_title,
+    get_artist,
+    get_title,
+    read_shift_source,
+    read_tags,
+    render_autorename,
+    sanitize_filename,
+    tool_stamp,
+)
 from .util import _quiet, run_tool, say
 
 
@@ -297,10 +307,32 @@ def run_video_conversion(args, input_path, out_dir, ctx):
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
+    # Filename: --autorename renders, otherwise stem [Nx].
+    _artist = get_artist(input_path)
+    _orig_title = get_title(input_path, fallback=input_path.stem)
+    _diff_bare = (f"{duration_factor:g}x" if duration_factor != 1.0 else "")
+    _auto = getattr(args, "autorename", None)
+    _rendered = None
+    if _auto is not None:
+        if _auto == "":
+            from .tags import autorename_base
+            _base_t = _orig_title
+            # Stripped title for legacy mode mirrors audio naming.
+            _rendered = autorename_base(
+                _artist, _base_t, input_path.stem,
+                drop_shift=bool(_diff_bare), drop_rate=False)
+            if _diff_bare:
+                _rendered = f"{_rendered} [{_diff_bare}]"
+        else:
+            _rendered = render_autorename(
+                args, _artist, _orig_title, input_path.stem,
+                diff=_diff_bare)
     parent = (out_dir if out_dir is not None
               else single_parent(args, input_path))
     if args.output is not None and out_dir is None:
         output_path = parent / args.output
+    elif _rendered:
+        output_path = parent / (sanitize_filename(_rendered) + ext)
     else:
         suffix = (f" [{duration_factor:g}x]"
                   if duration_factor != 1.0 else "")
@@ -359,6 +391,11 @@ def run_video_conversion(args, input_path, out_dir, ctx):
                "-i", str(input_path)]
         if aac_tmp is not None:
             cmd += ["-i", str(aac_tmp)]
+        cover_flag = ctx.get("cover_flag")
+        cover_idx = None
+        if cover_flag is not None and container_key != "webm":
+            cover_idx = 1 + (1 if aac_tmp is not None else 0)
+            cmd += ["-i", str(cover_flag)]
         audio_labels = []
         for i in range(n_audio):
             if aac_tmp is not None:
@@ -378,6 +415,8 @@ def run_video_conversion(args, input_path, out_dir, ctx):
             cmd += ["-map", f"[{label}]"]
         if aac_tmp is not None:
             cmd += ["-map", "1:a:0"]
+        if cover_idx is not None:
+            cmd += ["-map", f"{cover_idx}:v"]
         for i in range(n_subs):
             cmd += ["-map", f"0:s:{i}"]
         # Per-encoder quality: h264 takes preset+crf, svt-av1 takes
@@ -420,20 +459,66 @@ def run_video_conversion(args, input_path, out_dir, ctx):
                 cmd += ["-bsf:s",
                         f"setts=ts=TS/{duration_factor:g}"
                         f":duration=DURATION/{duration_factor:g}"]
+        # Cover: mp4/mkv carry it as an attached picture; webm ignores.
+        if cover_flag is not None and container_key == "webm":
+            print("Warning: --cover ignored for webm output "
+                  "(container cannot carry thumbnails)", file=sys.stderr)
+        if cover_idx is not None:
+            cmd += ["-c:v:1", "mjpeg", "-disposition:v:1", "attached_pic"]
         if ext == ".mp4":
             cmd += ["-movflags", "+faststart"]
         cmd += ["-map_metadata", "0"]
-        tags = read_tags(input_path, "title", "artist", "album", "date",
-                         "genre", "comment", "description")
-        title = tags.get("title") or input_path.stem
-        artist = tags.get("artist")
+        # Tags: template (--tag-template) wins, else source pass-through.
+        tmpl = ctx.get("tmpl")
+        _diff = (f"{duration_factor:g}x" if duration_factor != 1.0 else "")
+        if tmpl is not None:
+            (title_base, ff_extra, stub_encoder, eff_artist,
+             original_title, title_verbatim) = apply_template_tags(
+                tmpl, input_path, _orig_title, _artist,
+                keep_missing=bool(getattr(args, "no_delete_tags", False)),
+                slots={"diff": _diff, "quality": "", "resample": "",
+                       "denightcore": ""})
+            from .naming import clean_source_title
+            title = compute_new_title(
+                tmpl, title_base, clean_source_title(original_title),
+                "", diff=_diff, title_verbatim=title_verbatim)
+            tags = read_tags(input_path, "title", "artist", "album", "date",
+                             "genre", "comment", "description")
+            if not getattr(args, "no_delete_tags", False):
+                # strip mode: template only (plus title/artist above)
+                merged = {**ff_extra}
+                # apply_template_tags already stripped and aliased.
+                tags = {**tags, **merged}
+                for _k in list(tags):
+                    if _k not in merged and _k not in ("title", "artist"):
+                        tags.pop(_k, None)
+            else:
+                tags = {**tags, **ff_extra}
+            title = title or (ff_extra.get("title") or title_base
+                              or _orig_title or input_path.stem)
+            artist = eff_artist or ff_extra.get("artist")
+        else:
+            tags = read_tags(input_path, "title", "artist", "album", "date",
+                             "genre", "comment", "description")
+            _src_title = tags.get("title") or _orig_title or input_path.stem
+            if _diff and _src_title:
+                title = f"{_src_title} [Nightcore {_diff}]"
+            else:
+                title = _src_title
+            artist = tags.get("artist")
         cmd += ["-metadata", f"title={title}"]
         if artist:
             cmd += ["-metadata", f"artist={artist}"]
-        for key in ("album", "date", "genre"):
+        for key in ("album", "date", "genre", "comment", "description"):
             value = tags.get(key)
-            if value:
+            if value and key not in ("title", "artist"):
                 cmd += ["-metadata", f"{key}={value}"]
+        # Extra template keys (everything else in the template file).
+        if tmpl is not None:
+            for _k, _v in (ff_extra or {}).items():
+                if _k not in ("title", "artist", "album", "date", "genre",
+                              "comment", "description") and _v:
+                    cmd += ["-metadata", f"{_k}={_v}"]
         if not ctx.get("no_stamp"):
             cmd += ["-metadata",
                     f"description={tool_stamp()} --video {duration_factor:g}x"]

@@ -686,7 +686,7 @@ def main():
                     return 1
             _ctx = {
                 "tmpl": tmpl,
-                "cover_flag": None,
+                "cover_flag": cover_flag,
                 "lossy_opts": (shlex.split(args.lossy_opts)
                                if args.lossy_opts else []),
                 "backend": None,

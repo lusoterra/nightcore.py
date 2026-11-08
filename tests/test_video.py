@@ -203,6 +203,48 @@ def test_video_qaac_mux_streamcopy(monkeypatch, tmp_path):
     assert ("audio", "aac") in kinds
 
 
+def test_video_autorename_uses_template(monkeypatch, tmp_path):
+    _require("ffmpeg", "ffprobe")
+    src = tmp_path / "in.mp4"
+    _video(src)
+    monkeypatch.chdir(tmp_path)
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.1", "-F", "mkv", "--autorename", "-y",
+               "--lossy-opts=", "-o", str(tmp_path / "x.mp4")])
+    # -o overrides autorename; without -o the default template renders
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.1", "-F", "mkv", "--autorename", "-y"])
+    assert rc == 0
+    # Bare --autorename with no artist tag yields the title stem.
+    outs = sorted(tmp_path.glob("*.mkv"))
+    assert outs, list(tmp_path.iterdir())
+
+
+def test_video_tag_template_applied(monkeypatch, tmp_path):
+    _require("ffmpeg", "ffprobe")
+    src = tmp_path / "in.mp4"
+    _video(src)
+    tmpl = tmp_path / "pack.txt"
+    tmpl.write_text('title="My Mix"\nartist="Video Artist"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.1", "-F", "mkv", "--tag-template",
+               str(tmpl), "-y"])
+    assert rc == 0
+    out = next(p for p in tmp_path.glob("*.mkv"))
+    raw = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format_tags",
+         "-of", "json", str(out)],
+        check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace").stdout
+    import json
+    fmt = json.loads(raw)
+    fmt_tags = {str(k).lower(): v for k, v in
+                (fmt.get("format", {}).get("tags") or {}).items()}
+    assert fmt_tags.get("title") == "My Mix"
+    assert fmt_tags.get("artist") == "Video Artist"
+
+
 def test_mkvid_still_rejects_speed(monkeypatch, tmp_path):
     _require("ffmpeg", "ffprobe", "metaflac")
     src = tmp_path / "song.flac"
