@@ -34,7 +34,11 @@ follows speed, never preserved), the resolution is kept and the picture is
 re-encoded to h264 (or AV1/VP9) with the chosen audio codec. Embedded
 subtitles are retimed by the same factor; a sidecar \fB.lrc\fR or \fB.ass\fR
 lands as a retimed copy next to the output (\fB.in [1.1x].ass\fR style).
-\fB--mkvid\fR stays the classic still-image YouTube remux.
+\fB--autorename\fR and \fB--tag-template\fR apply exactly as for audio
+(filenames via the template, title/artist and extra keys via the pack
+template). \fB--cover\fR is ignored unless the container carries
+thumbnails: mp4 and mkv embed it as an attached picture, webm warns and
+drops it. \fB--mkvid\fR stays the classic still-image YouTube remux.
 .SH OPTIONS
 .TP
 .B -s, --speed \fISPEED\fR
