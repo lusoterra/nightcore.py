@@ -81,7 +81,10 @@ def parse_arguments():
         default="flac",
         metavar="FMT",
         help="Output format: flac (default), alac, mp3, opus, aac;\n"
-             "with --mkvid: mkv (default), mp4 or mp4alac (the video container)"
+             "for a video input: preset mp4 (h264+aac), mp4alac (h264+alac),\n"
+             "mkv (h264+flac), webm (vp9+opus), or reversible pair "
+             "h264/aac (video/audio either order guesses the container).\n"
+             "with --mkvid: mkv (default), mp4 or mp4alac (classic still-image video)"
     )
 
     parser.add_argument(
@@ -295,10 +298,8 @@ def parse_arguments():
         "even worse) while mkv/mp4alac stay lossless, so YouTube's Opus\n"
         "transcode is one generation of loss. -F picks mkv (default),\n"
         "mp4 or mp4alac. No image and no embedded cover art is a loud\n"
-        "error; audio flags do not apply to a remux. A video input\n"
-        "with a real video stream is sped up instead (source resolution\n"
-        "kept, h264, subtitles retimed): -s/-S/-p/-r/-R/-D then apply\n"
-        "to the audio with setpts on the video."
+        "error; no audio processing flags apply (it is a remux, not a\n"
+        "conversion)."
     )
 
     parser.add_argument(
@@ -592,9 +593,109 @@ def main():
         return run_mkvid(args)
 
     if args.format not in OUTPUT_FORMATS:
+        from .video import parse_video_format, run_video_conversion
+        if parse_video_format(args.format) is not None:
+            # Video input goes through the main conversion path: -s/-S
+            # etc. speed video + audio together, mkvid stays classic.
+            if args.batch is not None:
+                print("Error: --batch is not supported for video speedup "
+                      "(pass one video file)", file=sys.stderr)
+                return 1
+            if args.renametag:
+                print("Error: -N/--renametag cannot be combined with a "
+                      "video format (no audio is processed)", file=sys.stderr)
+                return 1
+            if args.output is not None and len(args.input) > 1:
+                print("Error: -o/--output needs a single input "
+                      "(one name cannot fit many files)", file=sys.stderr)
+                return 1
+            if args.output is not None and not Path(args.output).suffix:
+                print("Error: -o/--output needs a file extension",
+                      file=sys.stderr)
+                return 1
+            if not args.input:
+                print("Error: input file is required", file=sys.stderr)
+                return 1
+            _video_inputs = [Path(p) for p in args.input
+                             if Path(p).suffix.lower() == ".lrc"
+                             or Path(p).suffix.lower() == ".ass"]
+            if _video_inputs:
+                # Sidecar lyrics/subtitles retime alongside the video.
+                from .lrc import run_lrc
+                from .ass import run_ass
+                from .audio import has_real_video as _has_video
+                _videos = [Path(p) for p in args.input
+                           if Path(p).is_file() and _has_video(Path(p))]
+                if not _videos:
+                    print("Error: video format needs a video input",
+                          file=sys.stderr)
+                    return 1
+            _ctx = {
+                "tmpl": tmpl,
+                "cover_flag": None,
+                "lossy_opts": (shlex.split(args.lossy_opts)
+                               if args.lossy_opts else []),
+                "backend": None,
+                "no_stamp": args.no_stamp,
+                "no_pipeline": args.no_pipeline,
+                "speed": args.speed,
+                "combo": False,
+                "st_signed": None,
+                "combo_seq": 1.0,
+                "eff_semitones": args.semitones,
+            }
+            # .lrc/.ass sidecars retime first, then each video.
+            _failed = []
+            _videos = []
+            _sidecars = []
+            for _p in args.input:
+                _lp = Path(_p)
+                if _lp.suffix.lower() in (".lrc", ".ass"):
+                    _sidecars.append(_lp)
+                else:
+                    _videos.append(_lp)
+            if not _videos:
+                print("Error: video format needs a video input",
+                      file=sys.stderr)
+                return 1
+            if len(_videos) == 1 and args.output is None:
+                _vctx = dict(_ctx)
+                for _sc in _sidecars:
+                    if _sc.suffix.lower() == ".lrc":
+                        from .lrc import run_lrc
+                        run_lrc(args, _sc, None, _vctx)
+                    else:
+                        from .ass import run_ass
+                        run_ass(args, _sc, None, _vctx)
+                rc = run_video_conversion(
+                    args, _videos[0], None, _vctx)
+                print_summary(_vctx)
+                return rc
+            _vctx = dict(_ctx)
+            _vctx["batch_total"] = len(_videos)
+            for _bi, _v in enumerate(_videos):
+                _vctx["batch_index"] = _bi
+                if run_video_conversion(args, _v, None, _vctx) != 0:
+                    _failed.append(_v.name)
+            for _sc in _sidecars:
+                if _sc.suffix.lower() == ".lrc":
+                    from .lrc import run_lrc
+                    run_lrc(args, _sc, None, _vctx)
+                else:
+                    from .ass import run_ass
+                    run_ass(args, _sc, None, _vctx)
+            if _failed:
+                print(f"Error: {len(_failed)} of {len(_videos)} file(s) "
+                      f"failed: {', '.join(_failed)}", file=sys.stderr)
+                print_summary(_vctx)
+                return 1
+            print(f"Done: {len(_videos)} file(s)")
+            print_summary(_vctx)
+            return 0
         print(
             f"Error: unknown output format {args.format!r} "
-            "(flac, alac, mp3, opus, aac; mkv/mp4/mp4alac require --mkvid)",
+            "(flac, alac, mp3, opus, aac; video: mp4/mkv/mp4alac/webm "
+            "or h264/aac)",
             file=sys.stderr,
         )
         return 1

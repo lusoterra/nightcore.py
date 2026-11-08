@@ -11,6 +11,7 @@ import tempfile
 from .audio import cover_codec_name, extract_cover_tmp, format_rate, sample_is_float, semitones_from_speed, speed_from_semitones
 from .backends import coreaudio_toolbox_version, find_qaac, flac_postprocess, missing_metaflac, qaac_redist_hint, run_ffmpeg, run_lame, run_opusenc, run_qaac_alac, run_rubberband, run_sox_rate, tame_hot_wav, tool_version, which_cached
 from .constants import COVER_CODECS, COVER_FORMATS, LOSSY_CODECS, OUTPUT_FORMATS, PIPELINE_TAG, STALE_TAGS, STAMP_TAG, _IMAGE_MIME
+from .ass import run_ass
 from .lrc import run_lrc
 from .naming import claim_output_path, clean_source_title, single_parent, split_shift_tags, strip_denightcore_tags, strip_empty_display_tags, strip_quality_rate_tags
 from .plan import resolve_audio_naming, stage_records
@@ -42,6 +43,9 @@ def run_conversion(args, input_path, out_dir, ctx):
 
     if input_path.suffix.lower() == ".lrc":
         return run_lrc(args, input_path, out_dir, ctx)
+
+    if input_path.suffix.lower() == ".ass":
+        return run_ass(args, input_path, out_dir, ctx)
 
     # Fast skip for batch reruns: predict the output name with no
     # ffprobe (filename + cheap tag read) and check it against the

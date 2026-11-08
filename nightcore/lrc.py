@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 
-from .constants import AUDIO_EXTS, _LOSSLESS_EXTS, _LRC_LENGTH, _LRC_STAMP
+from .constants import AUDIO_EXTS, VIDEO_EXTS, _LOSSLESS_EXTS, _LRC_LENGTH, _LRC_STAMP
 from .naming import claim_output_path, single_parent
 from .plan import predict_audio_stem
 from .tags import sanitize_filename
@@ -85,8 +85,8 @@ def find_parent_audio(lrc_path):
         return None
     cands = [p for p in entries
              if p.is_file() and p.stem == lrc_path.stem
-             and p.suffix.lower() in AUDIO_EXTS
-             and p.suffix.lower() != ".lrc"]
+             and p.suffix.lower() in (AUDIO_EXTS + VIDEO_EXTS)
+             and p.suffix.lower() not in (".lrc", ".ass")]
     cands.sort(key=lambda p: (0 if p.suffix.lower() in _LOSSLESS_EXTS else 1,
                               p.name))
     return cands[0] if cands else None
@@ -130,8 +130,8 @@ def run_lrc(args, input_path, out_dir, ctx):
         if _bfiles is not None:
             _cands = [Path(p) for p in _bfiles
                       if Path(p).stem == input_path.stem
-                      and Path(p).suffix.lower() in AUDIO_EXTS
-                      and Path(p).suffix.lower() != ".lrc"]
+                      and Path(p).suffix.lower() in (AUDIO_EXTS + VIDEO_EXTS)
+                      and Path(p).suffix.lower() not in (".lrc", ".ass")]
             _cands.sort(key=lambda p: (
                 0 if p.suffix.lower() in _LOSSLESS_EXTS else 1, p.name))
             _parent = _cands[0] if _cands else None

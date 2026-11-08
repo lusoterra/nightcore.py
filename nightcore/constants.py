@@ -100,8 +100,8 @@ AUDIO_EXTS = (".flac", ".wav", ".aiff", ".aif", ".ape", ".wv", ".tta",
               ".wma", ".mpc", ".ac3", ".dts", ".amr", ".speex", ".mp2",
               ".lrc")
 
-# Container extensions that may carry a real video stream (--mkvid video
-# speedup). The probe, not the suffix, decides whether one is present.
+# Container extensions that may carry a real video stream. The probe,
+# not the suffix, decides whether one is present.
 VIDEO_EXTS = (".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".mpg",
               ".mpeg", ".mts", ".m2ts", ".ts")
 
@@ -215,6 +215,35 @@ MKVID_HEIGHT = 1080
 MKVID_PRESET = "veryfast"
 MKVID_TUNE = "stillimage"
 MKVID_CRF = "18"
+
+# Video speedup: -F presets (single token) mapping to a video+audio pair.
+# The slash-pair form -F avc/aac (reversible: -F aac/avc) is the general
+# case; these are just its common spellings.
+VIDEO_FORMATS = {
+    "mp4": {"ext": ".mp4", "video": "h264", "audio": "aac",
+            "subtitle": "mov_text", "lossy": True},
+    "mp4alac": {"ext": ".mp4", "video": "h264", "audio": "alac",
+                "subtitle": "mov_text", "lossy": False},
+    "mkv": {"ext": ".mkv", "video": "h264", "audio": "flac",
+            "subtitle": "srt", "lossy": False},
+    "webm": {"ext": ".webm", "video": "vp9", "audio": "opus",
+             "subtitle": "webvtt", "lossy": True},
+}
+
+# Video codec aliases -> ffmpeg encoder, quality default.
+VIDEO_ENCODERS = {
+    "h264": "libx264",
+    "avc": "libx264",
+    "av1": "libsvtav1",
+    "vp9": "libvpx-vp9",
+    "vp8": "libvpx",
+    "hevc": "libx265",
+    "h265": "libx265",
+}
+
+VIDEO_CODECS = set(VIDEO_ENCODERS)
+
+AUDIO_CODECS = {"flac", "alac", "aac", "opus", "mp3", "vorbis"}
 
 
 # Cover-art filenames (case-insensitive stem + image suffix) copied
