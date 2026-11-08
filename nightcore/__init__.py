@@ -123,6 +123,7 @@ def _git_hash_from_checkout() -> str | None:
         top_proc = subprocess.run(
             ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, timeout=2,
+            encoding="utf-8", errors="replace",
         )
     except Exception:
         return None
@@ -143,6 +144,7 @@ def _git_hash_from_checkout() -> str | None:
         proc = subprocess.run(
             ["git", "-C", str(cwd), "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, timeout=2,
+            encoding="utf-8", errors="replace",
         )
     except Exception:
         return None

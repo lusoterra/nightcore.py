@@ -53,6 +53,7 @@ def _flac_raw_fields(path):
     out = subprocess.run(
         ["metaflac", "--list", "--block-type=VORBIS_COMMENT", str(path)],
         check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
     ).stdout
     fields = {}
     last_key = None
@@ -456,6 +457,7 @@ def test_pitch_path_uses_tamed_wav(monkeypatch, capsys, tmp_path):
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "csv=p=0", str(out)],
         check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
     ).stdout.strip()
     assert abs(float(probe) - 1.0) < 0.1
 
@@ -491,6 +493,7 @@ def test_resample_redo_keeps_level(tmp_path):
     probe = subprocess.run(
         ["sox", str(out), "-n", "stats"],
         check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
     ).stderr
     match = re.search(r"(?m)^Pk lev dB\s+(.+)$", probe)
     assert match is not None

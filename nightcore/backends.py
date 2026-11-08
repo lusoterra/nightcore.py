@@ -28,6 +28,7 @@ def wav_peak_db(path):
         result = subprocess.run(
             ["sox", str(path), "-n", "stats"],
             capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace",
         )
     except OSError:
         return None
@@ -137,6 +138,7 @@ def _verified_cli(binary, check_args, marker, timeout=60):
         result = subprocess.run(
             [binary] + check_args,
             capture_output=True, text=True, check=False, timeout=timeout,
+            encoding="utf-8", errors="replace",
         )
     except (subprocess.SubprocessError, OSError):
         return False
@@ -221,6 +223,7 @@ def tool_version(name):
             result = subprocess.run(
                 [name, _VERSION_FLAGS.get(name, "--version")],
                 capture_output=True, text=True, check=False, timeout=30,
+                encoding="utf-8", errors="replace",
             )
         except (subprocess.SubprocessError, OSError):
             result = None
@@ -272,6 +275,7 @@ def find_qaac():
         result = subprocess.run(
             ["qaac", "--check"],
             capture_output=True, text=True, check=False, timeout=180,
+            encoding="utf-8", errors="replace",
         )
     except (subprocess.SubprocessError, OSError):
         return None
@@ -470,6 +474,7 @@ def ffmpeg_has_encoder(name):
         result = subprocess.run(
             ["ffmpeg", "-hide_banner", "-h", f"encoder={name}"],
             capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace",
         )
     except OSError:
         return False

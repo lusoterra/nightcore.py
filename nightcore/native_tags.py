@@ -29,7 +29,7 @@ _native_cache = {}
 def _run(cmd):
     """subprocess.run alias, so tests can stub tool output."""
     return subprocess.run(cmd, capture_output=True, text=True,
-                          errors="replace")
+                          encoding="utf-8", errors="replace")
 
 
 def native_format_tags(path):

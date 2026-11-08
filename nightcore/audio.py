@@ -46,6 +46,7 @@ def _probe_audio_uncached(path):
              "-of", "json",
              str(path)],
             capture_output=True, text=True, check=True,
+            encoding="utf-8", errors="replace",
         )
     except subprocess.CalledProcessError as e:
         print("ffprobe failed:", (e.stderr or "").strip(), file=sys.stderr)
@@ -252,6 +253,7 @@ def packet_vbr_info(path, threshold=0.02, min_packets=30, max_packets=300):
                 str(path),
             ],
             capture_output=True, text=True, check=True,
+            encoding="utf-8", errors="replace",
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
