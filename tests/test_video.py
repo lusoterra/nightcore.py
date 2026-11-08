@@ -159,6 +159,50 @@ def test_video_unsupported_combo_fails(monkeypatch, tmp_path, capsys):
     assert "needs a .mkv output, not .mp4" in err
 
 
+def test_video_qaac_mux_streamcopy(monkeypatch, tmp_path):
+    """qaac temp audio is stream-copied, never fed through a filter."""
+    _require("ffmpeg", "ffprobe")
+    import pathlib, subprocess
+    src = tmp_path / "in.mp4"
+    _video(src)
+    monkeypatch.chdir(tmp_path)
+    from nightcore import video as video_mod
+
+    def fake_qaac(wav, out, alac=False, extra_args=()):
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(wav),
+             "-c:a", "aac", "-b:a", "128k", str(out)],
+            check=True)
+
+    original = video_mod.run_qaac_alac
+    monkeypatch.setattr(video_mod, "run_qaac_alac", fake_qaac)
+
+    class Args:
+        speed = 1.1
+        semitones = None
+        reciprocal = False
+        pitch = False
+        resample = False
+        denightcore = False
+        output = None
+        output_folder = None
+        overwrite = True
+        dry_run = False
+        format = "avc/aac"
+
+    ctx = {"tmpl": None, "cover_flag": None, "lossy_opts": ["-V", "91"],
+           "backend": {"kind": "qaac"}, "no_stamp": False,
+           "no_pipeline": False, "speed": 1.1, "combo": False,
+           "st_signed": None, "combo_seq": 1.0, "eff_semitones": None}
+    rc = video_mod.run_video_conversion(Args(), src, None, ctx)
+    assert rc == 0
+    out = tmp_path / "in [1.1x].mp4"
+    kinds = {(s["codec_type"], s["codec_name"])
+             for s in _probe(out)["streams"]}
+    assert ("video", "h264") in kinds
+    assert ("audio", "aac") in kinds
+
+
 def test_mkvid_still_rejects_speed(monkeypatch, tmp_path):
     _require("ffmpeg", "ffprobe", "metaflac")
     src = tmp_path / "song.flac"

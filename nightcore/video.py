@@ -361,11 +361,14 @@ def run_video_conversion(args, input_path, out_dir, ctx):
             cmd += ["-i", str(aac_tmp)]
         audio_labels = []
         for i in range(n_audio):
+            if aac_tmp is not None:
+                # qaac output is stream-copied in the mux; it must be
+                # mapped directly (ffmpeg refuses streamcopy of a
+                # filtergraph-fed stream).
+                continue
             label = f"aout{i}"
             audio_labels.append(label)
-            if aac_tmp is not None and i == 0:
-                fc.append(f"[1:a:0]anull[{label}]")
-            elif audio_chain:
+            if audio_chain:
                 fc.append(f"[0:a:{i}]{audio_chain}[{label}]")
             else:
                 fc.append(f"[0:a:{i}]anull[{label}]")
@@ -373,6 +376,8 @@ def run_video_conversion(args, input_path, out_dir, ctx):
         cmd += ["-map", "[vout]"]
         for label in audio_labels:
             cmd += ["-map", f"[{label}]"]
+        if aac_tmp is not None:
+            cmd += ["-map", "1:a:0"]
         for i in range(n_subs):
             cmd += ["-map", f"0:s:{i}"]
         # Per-encoder quality: h264 takes preset+crf, svt-av1 takes
