@@ -18,8 +18,9 @@ _probe_no_ffprobe = False
 def probe_audio(path):
     """Everything ffprobe knows about a file, in one pass (cached).
 
-    Returns {"audio": {...}, "video": [...], "format": {...},
-    "format_tags": {...}} with missing sections as {} / []. Results are
+    Returns {"audio": {...}, "audio_streams": [...], "video": [...],
+    "format": {...}, "format_tags": {...}, "subtitles": [...]} with
+    missing sections as {} / []. Results are
     cached by path for the run: inputs are never rewritten mid-run
     (conversion outputs land elsewhere, -N probes before replacing,
     temps have unique paths), so one probe per file is enough. The
@@ -33,13 +34,15 @@ def probe_audio(path):
 
 
 def _probe_audio_uncached(path):
-    empty = {"audio": {}, "video": [], "format": {}, "format_tags": {}}
+    empty = {"audio": {}, "audio_streams": [], "video": [], "format": {},
+             "format_tags": {}, "subtitles": []}
     try:
         result = subprocess.run(
             ["ffprobe", "-v", "error",
              "-show_entries",
              ("stream=codec_type,codec_name,bit_rate,sample_fmt,"
-              "bits_per_raw_sample,sample_rate"),
+              "bits_per_raw_sample,sample_rate,width,height,"
+               "avg_frame_rate,r_frame_rate,duration,disposition"),
              "-show_entries", "stream_tags",
              "-show_entries", "format=bit_rate",
              "-show_entries", "format_tags",
@@ -68,10 +71,14 @@ def _probe_audio_uncached(path):
         "audio": next((s for s in streams
                        if str(s.get("codec_type") or "").lower() == "audio"),
                       {}),
+        "audio_streams": [s for s in streams
+                          if str(s.get("codec_type") or "").lower() == "audio"],
         "video": [s for s in streams
                   if str(s.get("codec_type") or "").lower() == "video"],
         "format": fmt,
         "format_tags": fmt.get("tags") or {},
+        "subtitles": [s for s in streams
+                      if str(s.get("codec_type") or "").lower() == "subtitle"],
     }
 
 
@@ -313,6 +320,25 @@ def cover_codec_name(path):
         if name:
             return name
     return None
+
+
+def real_video_streams(path):
+    """Video streams that are not attached cover art (mjpeg/png pictures)."""
+    out = []
+    for stream in probe_audio(path).get("video", []):
+        disp = stream.get("disposition") or {}
+        if isinstance(disp, dict) and disp.get("attached_pic"):
+            continue
+        codec = str(stream.get("codec_name") or "").strip().lower()
+        if codec in ("mjpeg", "png"):
+            continue
+        out.append(stream)
+    return out
+
+
+def has_real_video(path):
+    """True when the file carries an actual moving video stream."""
+    return bool(real_video_streams(path))
 
 
 def extract_cover_tmp(input_path, orig_cover, tempdir):

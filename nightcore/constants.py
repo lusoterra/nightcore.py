@@ -100,6 +100,11 @@ AUDIO_EXTS = (".flac", ".wav", ".aiff", ".aif", ".ape", ".wv", ".tta",
               ".wma", ".mpc", ".ac3", ".dts", ".amr", ".speex", ".mp2",
               ".lrc")
 
+# Container extensions that may carry a real video stream (--mkvid video
+# speedup). The probe, not the suffix, decides whether one is present.
+VIDEO_EXTS = (".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".mpg",
+              ".mpeg", ".mts", ".m2ts", ".ts")
+
 
 _SHIFT_TOKEN = re.compile(r"^(-?\d+(?:\.\d+)?)(x|st)$")
 

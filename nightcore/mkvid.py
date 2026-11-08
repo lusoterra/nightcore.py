@@ -1,18 +1,20 @@
 """--mkvid: remux one song (+ optional .lrc lyrics, + image) into a
-1080p YouTube video.
+1080p YouTube video, or speed an existing video up.
 
-The image is letterboxed / pillarboxed into 1920x1080 with black bars
-(never stretched); the audio rides as FLAC in mkv, ALAC in mp4alac, or
-AAC in mp4 (default, qaac TVBR 91 unless --lossy-opts overrides) -- so
-mkv/mp4alac reach YouTube's Opus transcode as a single generation of
-loss, while mp4 trades one extra lossy generation for players that
-reject ALAC (Discord and friends) and containers they reject (mkv).
-There is no resampling (the containers accept the source rate); if
-that ever changes, SoX does the resampling.
+Still-image mode (song input): the image is letterboxed / pillarboxed into
+1920x1080 with black bars (never stretched); the audio rides as FLAC in mkv,
+ALAC in mp4alac, or AAC in mp4 (default, qaac TVBR 91 unless --lossy-opts
+overrides) -- so mkv/mp4alac reach YouTube's Opus transcode as a single
+generation of loss, while mp4 trades one extra lossy generation for players
+that reject ALAC (Discord and friends) and containers they reject (mkv).
+No audio processing flags apply in this mode: it is a remux.
 
-No audio processing flags (-s, -S, -p, -r, -R, -D) apply: this is a
-remux, not a conversion (mp4's AAC encode is the one exception, and it
-takes no shift either).
+Video-speedup mode (input with a real video stream, not cover art): the
+video is slowed/sped with setpts and the audio with the normal nightcore
+asetrate chain (-s, -S, -p, -r, -R, -D apply to the audio), re-encoded to
+h264/avc at the source resolution with FLAC in mkv, ALAC in mp4alac, or AAC
+in mp4. Subtitles are retimed by the same factor and kept; attached cover
+art is dropped. There is no resampling unless -R is given.
 """
 
 from __future__ import annotations
@@ -31,7 +33,11 @@ from .audio import (
     cover_codec_name,
     extract_cover_tmp,
     get_audio_info,
+    has_real_video,
+    next_standard_rate,
     probe_audio,
+    real_video_streams,
+    speed_from_semitones,
     wav_codec_for,
 )
 from .backends import (
@@ -41,6 +47,7 @@ from .backends import (
 )
 from .constants import (
     AUDIO_EXTS,
+    VIDEO_EXTS,
     _IMAGE_MIME,
     LOSS_DEFAULTS,
     MKVID_CRF,
@@ -52,7 +59,7 @@ from .constants import (
     MKVID_WIDTH,
 )
 from .naming import single_parent
-from .tags import read_tags, sanitize_filename, tool_stamp
+from .tags import read_shift_source, read_tags, sanitize_filename, tool_stamp
 from .util import _quiet, run_tool, say
 
 # LRC timestamp: [mm:ss.cc] with optional [mm:ss.ccc]; the rest of the
@@ -157,19 +164,286 @@ def write_srt(lrc_path, srt_path, duration_ms=None):
     srt_path.write_text("\n".join(out), encoding="utf-8")
 
 
+def _speedup_plan(args, song):
+    """(duration_factor, pitch_extra, sample_rate, denight_raw) or ValueError.
+
+    Mirrors the speed math in cli.main/convert: -s sets the duration
+    factor (asetrate = plain nightcore, pitch follows speed); -S alone is
+    pitch-only (asetrate + aresample back, duration kept); -s + -S stacks
+    (duration from -s, extra pitch preserved-duration after it); -p forces
+    pitch-only; -D inverts the stamped shift. Pitch is never preserved:
+    a plain speed change raises/lowers pitch like the audio path does.
+    """
+    import math
+
+    speed_raw = args.speed if args.speed is not None else 1.0
+    eff_st = args.semitones
+    recip = bool(getattr(args, "reciprocal", False))
+    denight_raw = ""
+    if getattr(args, "denightcore", False):
+        stamped, denight_raw = read_shift_source(song)
+        if stamped is None or (stamped[0] == 1.0 and stamped[1] == 0.0):
+            raise ValueError(
+                "magic number not found: --denightcore needs a file "
+                "stamped by nightcore (filenames alone are not trusted)")
+        d_speed, d_st = stamped
+        duration_factor = 1.0 / d_speed if d_speed else 1.0
+        pitch_extra = speed_from_semitones(-d_st)
+    elif eff_st is not None and speed_raw != 1.0:
+        # Combo: duration from -s, extra semitone pitch on top.
+        st_signed = -eff_st if recip else eff_st
+        duration_factor = (1.0 / speed_raw) if recip else speed_raw
+        pitch_extra = speed_from_semitones(st_signed)
+    elif eff_st is not None:
+        pitch_factor = speed_from_semitones(eff_st)
+        if recip:
+            pitch_factor = 1.0 / pitch_factor
+        duration_factor = 1.0
+        pitch_extra = pitch_factor
+    else:
+        duration_factor = (1.0 / speed_raw) if recip else speed_raw
+        pitch_extra = 1.0
+    if getattr(args, "pitch", False) and not getattr(args, "denightcore", False):
+        # -p: pitch-shift only, keep duration (amount comes from -s/-S).
+        if eff_st is not None and speed_raw != 1.0:
+            pitch_extra = duration_factor * pitch_extra
+        elif eff_st is None:
+            pitch_extra = duration_factor
+        duration_factor = 1.0
+    if duration_factor <= 0 or not math.isfinite(duration_factor):
+        raise ValueError("Speed factor must be a finite number > 0")
+    if not math.isfinite(pitch_extra) or pitch_extra <= 0:
+        raise ValueError("Pitch factor must be a finite number > 0")
+    try:
+        sample_rate = int(str(
+            probe_audio(song)["audio"].get("sample_rate")).strip())
+    except (ValueError, AttributeError, TypeError):
+        sample_rate = None
+    return duration_factor, pitch_extra, sample_rate, denight_raw
+
+
+def _audio_speed_chain(sample_rate, duration_factor, pitch_extra, args):
+    """asetrate chain matching _speedup_plan; None means pass through."""
+    if sample_rate is None:
+        if duration_factor == 1.0 and pitch_extra == 1.0:
+            return None
+        raise ValueError("could not determine input sample rate")
+    sr = sample_rate
+    if pitch_extra != 1.0 and duration_factor != 1.0:
+        base = sr * duration_factor
+        chain = (f"asetrate={base:.2f},aresample={int(round(base))}"
+                 f",asetrate={base * pitch_extra:.2f},"
+                 f"aresample={int(round(base))}")
+    elif pitch_extra != 1.0:
+        chain = f"asetrate={sr * pitch_extra:.2f},aresample={sr}"
+    elif duration_factor != 1.0:
+        chain = f"asetrate={sr * duration_factor:.2f}"
+    else:
+        chain = None
+    if getattr(args, "resample", False):
+        target = next_standard_rate(sr * duration_factor)
+        if target is not None:
+            chain = (f"{chain},aresample={target}" if chain
+                     else f"aresample={target}")
+    return chain
+
+
+def _run_mkvid_video(args, song, fmt, spec, ext, audio_codec, sub_codec,
+                     is_lossy, lossy_opts, backend, use_qaac, lrc_path):
+    """Speed an existing video up: setpts video, asetrate audio, h264 out.
+
+    Resolution and fps are kept (no 1080p letterbox); subtitles are
+    retimed by the duration factor and kept; every audio track is sped.
+    Returns an exit code, like run_mkvid.
+    """
+    try:
+        duration_factor, pitch_extra, sample_rate, denight_raw = \
+            _speedup_plan(args, song)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    probe = probe_audio(song)
+    n_audio = len(probe.get("audio_streams") or [])
+    if n_audio == 0 and probe.get("audio"):
+        n_audio = 1
+    n_subs = len(probe.get("subtitles") or [])
+    try:
+        audio_chain = (_audio_speed_chain(
+            sample_rate, duration_factor, pitch_extra, args)
+            if n_audio else None)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    parent = single_parent(args, song)
+    if args.output is not None:
+        output_path = parent / args.output
+    else:
+        suffix = ""
+        if duration_factor != 1.0:
+            suffix = f" [{duration_factor:g}x]"
+        elif pitch_extra != 1.0:
+            suffix = ""
+        output_path = parent / (sanitize_filename(song.stem + suffix) + ext)
+    if output_path == song:
+        print("Error: output would overwrite input, aborting",
+              file=sys.stderr)
+        return 1
+    if output_path.exists() and not args.overwrite:
+        print(
+            f"Error: output already exists: {output_path} "
+            "(use -y to overwrite)",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.dry_run:
+        say(f"{output_path.name}: would speed {song.name} "
+            f"{duration_factor:g}x -> {fmt} ({audio_codec} audio, "
+            f"h264{', subtitles retimed' if n_subs else ''})")
+        return 0
+
+    tempdir = None
+    try:
+        # --- mp4 AAC via qaac: encode the sped audio first, then mux
+        # the sped video onto it (audio is stream-copied in the mux).
+        aac_tmp = None
+        if use_qaac and n_audio:
+            tempdir = Path(tempfile.mkdtemp(prefix="nightcore-mkvid-"))
+            _codec, _br, _bits, _fbr, _enc = get_audio_info(song)
+            depth_pcm = wav_codec_for(_bits)
+            tmp_wav = tempdir / "mkvid.wav"
+            aac_tmp = tempdir / "mkvid-aac.m4a"
+            say(f"  ffmpeg decode -> {depth_pcm} (sped {duration_factor:g}x)")
+            decode_cmd = ["ffmpeg", "-nostdin", "-y",
+                          "-i", str(song),
+                          "-map", "0:a", "-c:a", depth_pcm]
+            if audio_chain:
+                # qaac/CoreAudio rejects sped (non-standard) rates, so
+                # normalize the temp WAV back to the source rate. This
+                # keeps the sped duration and pitch (aresample preserves
+                # both while changing the container rate).
+                decode_chain = audio_chain
+                if sample_rate:
+                    decode_chain += f",aresample={sample_rate}"
+                decode_cmd += ["-af", decode_chain]
+            decode_cmd += [str(tmp_wav)]
+            # Decode filter must be -filter:a; -af is its alias.
+            run_tool(decode_cmd)
+            say(f"  qaac encode aac ({' '.join(lossy_opts)})")
+            run_qaac_alac(tmp_wav, aac_tmp, alac=False,
+                          extra_args=lossy_opts)
+            try:
+                tmp_wav.unlink()
+            except OSError:
+                pass
+
+        # --- ffmpeg: setpts video (+ retimed subtitles), asetrate audio
+        v_parts = "format=yuv420p"
+        fc = []
+        if duration_factor != 1.0:
+            fc.append(f"[0:v:0]setpts=PTS/{duration_factor:g},{v_parts}[vout]")
+        else:
+            fc.append(f"[0:v:0]{v_parts}[vout]")
+        cmd = ["ffmpeg", "-nostdin",
+               "-y" if args.overwrite else "-n",
+               "-i", str(song)]
+        if aac_tmp is not None:
+            cmd += ["-i", str(aac_tmp)]
+        audio_labels = []
+        audio_indices = list(range(n_audio))
+        for i in audio_indices:
+            label = f"aout{i}"
+            audio_labels.append(label)
+            if aac_tmp is not None:
+                fc.append(f"[1:a:0]anull[{label}]")
+            elif audio_chain:
+                fc.append(f"[0:a:{i}]{audio_chain}[{label}]")
+            else:
+                fc.append(f"[0:a:{i}]anull[{label}]")
+        cmd += ["-filter_complex", ";".join(fc)]
+        cmd += ["-map", "[vout]"]
+        for label in audio_labels:
+            cmd += ["-map", f"[{label}]"]
+        # Subtitles are not video/audio: setpts would turn them into a
+        # second video stream. Retiming goes through the setts bitstream
+        # filter instead, which scales TS and DURATION by the same factor.
+        for i in range(n_subs):
+            cmd += ["-map", f"0:s:{i}"]
+        cmd += ["-c:v", "libx264", "-preset", MKVID_PRESET, "-crf",
+                MKVID_CRF, "-pix_fmt", "yuv420p"]
+        if aac_tmp is not None:
+            cmd += ["-c:a", "copy"]
+        elif is_lossy:
+            cmd += ["-c:a", audio_codec] + list(lossy_opts)
+        else:
+            cmd += ["-c:a", audio_codec]
+        if n_subs:
+            cmd += ["-c:s", sub_codec]
+            if duration_factor != 1.0:
+                cmd += ["-bsf:s",
+                        f"setts=ts=TS/{duration_factor:g}"
+                        f":duration=DURATION/{duration_factor:g}"]
+        if ext == ".mp4":
+            cmd += ["-movflags", "+faststart"]
+        cmd += ["-map_metadata", "0"]
+        tags = read_tags(
+            song, "title", "artist", "album", "date", "genre",
+            "comment", "description",
+        )
+        title = tags.get("title") or song.stem
+        artist = tags.get("artist")
+        cmd += ["-metadata", f"title={title}"]
+        if artist:
+            cmd += ["-metadata", f"artist={artist}"]
+        for key in ("album", "date", "genre"):
+            value = tags.get(key)
+            if value:
+                cmd += ["-metadata", f"{key}={value}"]
+        if not getattr(args, "no_stamp", False):
+            cmd += [
+                "-metadata",
+                f"description={tool_stamp()} --mkvid {duration_factor:g}x",
+            ]
+        cmd += [str(output_path)]
+
+        suffix = f" -> {fmt} ({audio_codec} audio, h264)"
+        glue = ": speeding "
+        width = _term_width()
+        song_room = max(10, (width - len(glue) - len(suffix)) * 2 // 3)
+        out_room = max(10, width - len(glue) - len(suffix) - song_room)
+        line = (f"{_abbrev(output_path.name, out_room)}{glue}"
+                f"{_abbrev(song.name, song_room)} {duration_factor:g}x{suffix}")
+        say(line[:width])
+        say(f"  ffmpeg video speedup {duration_factor:g}x")
+        run_tool(cmd)
+        say(f"  done: {output_path}")
+        if _quiet < 2:
+            print(f"Summary: 1 converted -> {output_path}")
+        return 0
+
+    except subprocess.CalledProcessError as e:
+        print(f"\nffmpeg/qaac failed with exit code {e.returncode}",
+              file=sys.stderr)
+        return 1
+    except FileNotFoundError:
+        print("Error: ffmpeg went missing mid-run.", file=sys.stderr)
+        return 127
+    finally:
+        if tempdir is not None:
+            shutil.rmtree(tempdir, ignore_errors=True)
+
+
 def run_mkvid(args):
-    """Remux one song into a 1080p YouTube video. Exit code, like main."""
+    """Remux one song into a 1080p YouTube video, or speed an existing
+    video up. Exit code, like main."""
     # Egregious: contradict the remux contract (one song, no audio
-    # processing, no batching). These would silently do nothing, so they
-    # fail loudly instead of producing a misleading output.
+    # processing, no batching). The speed/pitch family is legal again
+    # for a real-video input (it drives the speedup) and is rejected
+    # for still-image mode below, once the probe knows which we have.
     egregious = (
         ("--batch", args.batch is not None),
-        ("-s/--speed", args.speed != 1.0),
-        ("-S/--semitones", args.semitones is not None),
-        ("-p/--pitch", args.pitch),
-        ("-r/--reciprocal", args.reciprocal),
-        ("-R/--resample", args.resample),
-        ("-D/--denightcore", args.denightcore),
         ("--renametag", args.renametag),
         ("--in-place", args.in_place),
     )
@@ -243,7 +517,7 @@ def run_mkvid(args):
     audio_files = [
         p for p in inputs
         if p.is_file() and p.suffix.lower() != ".lrc"
-        and p.suffix.lower() in AUDIO_EXTS
+        and p.suffix.lower() in (AUDIO_EXTS + VIDEO_EXTS)
     ]
     lrcs = [p for p in inputs if p.suffix.lower() == ".lrc"]
     others = [
@@ -252,13 +526,14 @@ def run_mkvid(args):
     ]
     if others:
         print(
-            "Error: --mkvid takes a song (+ one optional .lrc lyric), "
+            "Error: --mkvid takes a song or video (+ one optional .lrc lyric), "
             f"not: {', '.join(str(p) for p in others)}",
             file=sys.stderr,
         )
         return 1
     if len(audio_files) != 1:
-        print("Error: --mkvid needs exactly one song input", file=sys.stderr)
+        print("Error: --mkvid needs exactly one song or video input",
+              file=sys.stderr)
         return 1
     if len(lrcs) > 1:
         print("Error: --mkvid takes at most one .lrc lyric file",
@@ -270,6 +545,32 @@ def run_mkvid(args):
     if not song.is_file():
         print(f"Error: File not found: {song}", file=sys.stderr)
         return 1
+
+    # Video-speedup vs still-image mode, decided by the probe: cover art
+    # (attached_pic / mjpeg / png) never counts as a video stream.
+    is_video = has_real_video(song)
+    if not is_video:
+        egregious_speed = (
+            ("-s/--speed", args.speed != 1.0),
+            ("-S/--semitones", args.semitones is not None),
+            ("-p/--pitch", args.pitch),
+            ("-r/--reciprocal", args.reciprocal),
+            ("-R/--resample", args.resample),
+            ("-D/--denightcore", args.denightcore),
+        )
+        for flag, bad in egregious_speed:
+            if bad:
+                print(
+                    f"Error: --mkvid cannot be combined with {flag} "
+                    "(still-image mode remuxes, it does not process audio; "
+                    "use a video input to speed a video up)",
+                    file=sys.stderr,
+                )
+                return 1
+    if is_video:
+        return _run_mkvid_video(
+            args, song, fmt, spec, ext, audio_codec, sub_codec,
+            is_lossy, lossy_opts, backend, use_qaac, lrc_path)
 
     tempdir = None
     try:

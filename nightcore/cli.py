@@ -295,8 +295,10 @@ def parse_arguments():
         "even worse) while mkv/mp4alac stay lossless, so YouTube's Opus\n"
         "transcode is one generation of loss. -F picks mkv (default),\n"
         "mp4 or mp4alac. No image and no embedded cover art is a loud\n"
-        "error; no audio processing flags apply (it is a remux, not a\n"
-        "conversion)."
+        "error; audio flags do not apply to a remux. A video input\n"
+        "with a real video stream is sped up instead (source resolution\n"
+        "kept, h264, subtitles retimed): -s/-S/-p/-r/-R/-D then apply\n"
+        "to the audio with setpts on the video."
     )
 
     parser.add_argument(
