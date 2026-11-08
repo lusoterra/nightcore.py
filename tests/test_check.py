@@ -90,7 +90,7 @@ def test_check_qaac_broken_reports_dll_hint(monkeypatch, capsys):
     assert "qaac: BROKEN (found at /usr/bin/qaac" in out
     assert "missing Apple DLLs?" in out
     assert "vc_redist" not in out
-    assert "aac encode: ready via ffmpeg aac" in out
+    assert "aac encode: ready via ffmpeg libfdk_aac" in out
 
 
 def _stub_redist_env(monkeypatch, probe):
