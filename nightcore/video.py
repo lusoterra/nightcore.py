@@ -660,7 +660,7 @@ def run_video_conversion(args, input_path, out_dir, ctx):
                     cmd += ["-metadata", f"{_k}={_v}"]
         if not ctx.get("no_stamp"):
             cmd += ["-metadata",
-                    f"description={tool_stamp()} --video {duration_factor:g}x"]
+                    f"description={tool_stamp()}"]
         pipeline_tag = None
         if not ctx.get("no_pipeline"):
             import math as _math
