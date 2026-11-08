@@ -29,6 +29,8 @@ from .backends import (
     detect_lossy_dialect,
     ffmpeg_has_encoder,
     run_qaac_alac,
+    run_rubberband,
+    run_sox_rate,
     select_lossy_backend,
 )
 from .constants import (
@@ -43,6 +45,7 @@ from .constants import (
 from .naming import single_parent
 from .tags import (
     apply_template_tags,
+    build_pipeline,
     compute_new_title,
     get_artist,
     get_title,
@@ -52,7 +55,7 @@ from .tags import (
     sanitize_filename,
     tool_stamp,
 )
-from .util import _quiet, run_tool, say
+from .util import _active_outputs, _quiet, run_tool, say
 
 
 def guess_container(vcodec, acodec):
@@ -380,6 +383,80 @@ def run_video_conversion(args, input_path, out_dir, ctx):
             except OSError:
                 pass
 
+        # Pitch/resample through the audio pipeline (SoX headroom,
+        # rubberband, SoX settle/resample) exactly like convert.py.
+        # Plain speed (no pitch, no -R) stays a direct asetrate chain
+        # in the final mux; FLAC keeps its weird rate unless -R.
+        processed_wav = None
+        need_sox = (pitch_extra != 1.0 or getattr(args, "resample", False))
+        if need_sox and n_audio and aac_tmp is None:
+            from .backends import tame_hot_wav, which_cached
+            from .audio import semitones_from_speed
+            if which_cached("rubberband") is None and pitch_extra != 1.0:
+                print("Error: 'rubberband' not found.", file=sys.stderr)
+                return 127
+            if which_cached("sox") is None and (pitch_extra != 1.0
+                                                or getattr(args, "resample", False)):
+                print("Error: 'sox' not found.", file=sys.stderr)
+                return 127
+            if tempdir is None:
+                tempdir = Path(tempfile.mkdtemp(prefix="nightcore-video-"))
+            _codec, _br, _bits, _fbr, _enc = get_audio_info(input_path)
+            depth_pcm = wav_codec_for(_bits)
+            tmp_codec = "pcm_f32le"
+            step = 0
+            def _tw():
+                nonlocal step
+                step += 1
+                return tempdir / f"step{step}.wav"
+            t1 = _tw()
+            pre_chain = None
+            if duration_factor != 1.0 and sample_rate:
+                pre_chain = f"asetrate={sample_rate * duration_factor:.2f}"
+                if pitch_extra == 1.0:
+                    # plain resample case keeps sped duration/rate
+                    pre_chain += f",aresample={int(round(sample_rate * duration_factor))}"
+            decode_cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(input_path),
+                          "-map", "0:a", "-c:a", tmp_codec]
+            if pre_chain:
+                decode_cmd += ["-af", pre_chain]
+            decode_cmd += [str(t1)]
+            run_tool(decode_cmd)
+            cur = t1
+            cur_rate = sample_rate
+            pitch_st = 0.0
+            if pitch_extra != 1.0:
+                import math as _m
+                pitch_st = 12.0 * _m.log2(pitch_extra)
+                cur_rate = round(sample_rate * duration_factor) if duration_factor != 1.0 else sample_rate
+                # SoX headroom prescale before rubberband, like audio.
+                pitched_rate = round(cur_rate * pitch_extra)
+                cur, _trim = tame_hot_wav(cur, _tw)
+                t2 = _tw()
+                say(f"  SoX prescale for pitch headroom")
+                run_sox_rate(cur, t2, cur_rate if pitch_st < 0 else pitched_rate)
+                cur, cur_rate = t2, (cur_rate if pitch_st < 0 else pitched_rate)
+                t3 = _tw()
+                say(f"  rubberband pitch {pitch_st:+g}st")
+                run_rubberband(cur, t3, pitch_st, [])
+                cur = t3
+                cur, _ = tame_hot_wav(cur, _tw)
+                settle_rate = pitched_rate if pitch_st >= 0 else cur_rate
+                if settle_rate != cur_rate:
+                    t4 = _tw()
+                    run_sox_rate(cur, t4, settle_rate)
+                    cur, cur_rate = t4, settle_rate
+            resample_target = None
+            if getattr(args, "resample", False) and sample_rate:
+                resample_target = next_standard_rate(
+                    sample_rate * duration_factor)
+                if resample_target and resample_target != cur_rate:
+                    t5 = _tw()
+                    say(f"  SoX resample to {resample_target}Hz")
+                    run_sox_rate(cur, t5, resample_target)
+                    cur = t5
+            processed_wav = cur
+
         v_parts = "format=yuv420p"
         fc = []
         if duration_factor != 1.0:
@@ -391,17 +468,25 @@ def run_video_conversion(args, input_path, out_dir, ctx):
                "-i", str(input_path)]
         if aac_tmp is not None:
             cmd += ["-i", str(aac_tmp)]
+        audio_input_idx = 0
+        processed_idx = None
+        if processed_wav is not None:
+            audio_input_idx = len(cmd) // 2  # not used; compute below
+            processed_idx = 1 + (1 if aac_tmp is not None else 0)
+            cmd += ["-i", str(processed_wav)]
+            # Shifts cover index below.
         cover_flag = ctx.get("cover_flag")
         cover_idx = None
         if cover_flag is not None and container_key != "webm":
-            cover_idx = 1 + (1 if aac_tmp is not None else 0)
+            cover_idx = 1 + (1 if aac_tmp is not None else 0) + (
+                1 if processed_wav is not None else 0)
             cmd += ["-i", str(cover_flag)]
         audio_labels = []
         for i in range(n_audio):
-            if aac_tmp is not None:
-                # qaac output is stream-copied in the mux; it must be
-                # mapped directly (ffmpeg refuses streamcopy of a
-                # filtergraph-fed stream).
+            if aac_tmp is not None or processed_wav is not None:
+                # qaac output is stream-copied; processed.wav is already
+                # the final audio (paced sox/rubberband chain). Neither
+                # may ride the filtergraph (streamcopy rule).
                 continue
             label = f"aout{i}"
             audio_labels.append(label)
@@ -415,6 +500,8 @@ def run_video_conversion(args, input_path, out_dir, ctx):
             cmd += ["-map", f"[{label}]"]
         if aac_tmp is not None:
             cmd += ["-map", "1:a:0"]
+        elif processed_wav is not None:
+            cmd += ["-map", f"{processed_idx}:a:0"]
         if cover_idx is not None:
             cmd += ["-map", f"{cover_idx}:v"]
         for i in range(n_subs):
@@ -525,11 +612,34 @@ def run_video_conversion(args, input_path, out_dir, ctx):
         if not ctx.get("no_stamp"):
             cmd += ["-metadata",
                     f"description={tool_stamp()} --video {duration_factor:g}x"]
+        pipeline_tag = None
+        if not ctx.get("no_pipeline"):
+            import math as _math
+            _st = 0.0
+            if pitch_extra != 1.0:
+                _st = 12.0 * _math.log2(pitch_extra)
+            _codec, _br, _bits, _fbr, _enc = get_audio_info(input_path)
+            pipeline_tag = build_pipeline(
+                speed=duration_factor, semitones=_st,
+                pitch_mode=(_st != 0.0),
+                target_rate=(next_standard_rate(sample_rate * duration_factor)
+                             if getattr(args, "resample", False) and sample_rate else None),
+                out_format=container_key,
+                lossy_opts=lossy_opts if is_lossy_audio else (),
+                source_rate=sample_rate, source_bits=_bits,
+                source_codec=_codec,
+                tools=[("ffmpeg", __import__("nightcore.backends", fromlist=["x"]).tool_version("ffmpeg"))])
+            cmd += ["-metadata", f"encoder_settings={pipeline_tag}"]
         cmd += [str(output_path)]
+        _active_outputs.add(output_path)
         say(f"{output_path.name}: speeding {duration_factor:g}x "
             f"-> {container_key} ({vcodec} + {acodec})")
         run_tool(cmd)
+        if pipeline_tag and ext == ".mp4":
+            from .backends import m4a_postprocess
+            m4a_postprocess(output_path, pipeline_tag)
         say(f"  done: {output_path}")
+        _active_outputs.discard(output_path)
         if _quiet < 2:
             print(f"Summary: 1 converted -> {output_path}")
         return 0
