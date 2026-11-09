@@ -77,7 +77,11 @@ video stream, not cover art): preset \fBmp4\fR (h264+aac), \fBmp4alac\fR
 (h264+alac), \fBmkv\fR (h264+flac), \fBwebm\fR (vp9+opus), or a
 reversible pair such as \fBh264/aac\fR or \fBaac/h264\fR (video/audio
 in either order, container guessed from the codecs, e.g. \fBav1/flac\fR
-guesses mkv). \fBmkv\fR (default), \fBmp4\fR or \fBmp4alac\fR with
+guesses mkv). A song with no real video stream but with cover art
+(embedded, or \fB--cover\fR, which wins) gets its cover encoded as the
+video stream instead (\fBnightcore song.flac -s 1.35 -F avc/aac\fR):
+the still is encoded at its native even-rounded size and the sped
+audio sets its length; real video still wins when present. \fBmkv\fR (default), \fBmp4\fR or \fBmp4alac\fR with
 \fB--mkvid\fR (classic still-image video).
 Automatic quality defaults exist only for lossless output, tuned for most
 compression (FLAC level 12; ALAC has no knobs). Lossy outputs prefer

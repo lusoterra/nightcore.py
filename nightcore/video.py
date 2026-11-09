@@ -6,6 +6,11 @@ retimed (embedded via setts, sidecar .lrc via run_lrc elsewhere),
 and the result is h264/av1/vp9 + the chosen audio codec in a guessed
 container. Pitch is never preserved: a plain speed change raises or
 lowers pitch exactly like the audio path does.
+
+A song without a real video stream but with cover art (embedded, or
+--cover) gets its cover looped as the video stream instead: the still
+is encoded at its native size (even-rounded for yuv420p) and the
+sped audio sets its length. Real video always wins over cover.
 """
 
 from __future__ import annotations
@@ -18,6 +23,8 @@ from pathlib import Path
 
 from . import __version__
 from .audio import (
+    cover_codec_name,
+    extract_cover_tmp,
     get_audio_info,
     has_real_video,
     next_standard_rate,
@@ -37,6 +44,7 @@ from .backends import (
 )
 from .constants import (
     AUDIO_CODECS,
+    COVER_CODECS,
     LOSS_DEFAULTS,
     MKVID_CRF,
     MKVID_PRESET,
@@ -228,15 +236,40 @@ def _term_width():
 
 
 def run_video_conversion(args, input_path, out_dir, ctx):
-    """Speed one real-video file up. Returns a process-style exit code."""
+    """Speed one file up (real video, else cover-as-video). Exit code."""
     input_path = Path(input_path)
     if not input_path.is_file():
         print(f"Error: File not found: {input_path}", file=sys.stderr)
         return 1
-    if not has_real_video(input_path):
-        print(f"Error: {input_path.name} has no video stream "
-              "(use an audio format for audio-only files)", file=sys.stderr)
-        return 1
+    # Real video always wins; a song without one falls back to its
+    # cover as the video stream (--cover beats embedded art).
+    real_video = has_real_video(input_path)
+    cover_source = None
+    is_cover_only = False
+    tempdir = None
+    if not real_video:
+        _flag_cover = ctx.get("cover_flag")
+        if _flag_cover is not None:
+            cover_source = Path(_flag_cover)
+            is_cover_only = True
+        else:
+            cc = cover_codec_name(input_path)
+            if cc in COVER_CODECS:
+                tempdir = Path(tempfile.mkdtemp(prefix="nightcore-video-"))
+                cover_source = extract_cover_tmp(input_path, cc, tempdir)
+                if cover_source is not None:
+                    is_cover_only = True
+        if not is_cover_only:
+            if tempdir is not None:
+                shutil.rmtree(tempdir, ignore_errors=True)
+            print(f"Error: {input_path.name} has no video stream "
+                  "and no cover art (add --cover IMAGE.png/.jpg for "
+                  "cover-as-video)", file=sys.stderr)
+            return 1
+    else:
+        # No cover lookup needed, but real-video inputs still carry a
+        # tempdir sometimes (CLI tempos); keep the name live.
+        tempdir = None
 
     token = ctx.get("format_token") or args.format
     if isinstance(token, (list, tuple)):
@@ -349,18 +382,23 @@ def run_video_conversion(args, input_path, out_dir, ctx):
             input_path.stem + suffix) + ext)
     if output_path == input_path:
         print("Error: output would overwrite input, aborting", file=sys.stderr)
+        if tempdir is not None:
+            shutil.rmtree(tempdir, ignore_errors=True)
         return 1
     if output_path.exists() and not args.overwrite:
         print(f"Error: output already exists: {output_path} (use -y to overwrite)",
               file=sys.stderr)
+        if tempdir is not None:
+            shutil.rmtree(tempdir, ignore_errors=True)
         return 1
     if args.dry_run:
         say(f"{output_path.name}: would speed {input_path.name} "
             f"{duration_factor:g}x -> {container_key} "
             f"({vcodec} + {acodec})")
+        if tempdir is not None:
+            shutil.rmtree(tempdir, ignore_errors=True)
         return 0
 
-    tempdir = None
     try:
         cli_tmp = None
 
@@ -373,7 +411,8 @@ def run_video_conversion(args, input_path, out_dir, ctx):
                 run_lame(wav_path, tmp_path, lossy_opts)
 
         if use_qaac and n_audio:
-            tempdir = Path(tempfile.mkdtemp(prefix="nightcore-video-"))
+            if tempdir is None:
+                tempdir = Path(tempfile.mkdtemp(prefix="nightcore-video-"))
             _codec, _br, _bits, _fbr, _enc = get_audio_info(input_path)
             depth_pcm = wav_codec_for(_bits)
             tmp_wav = tempdir / "video.wav"
@@ -508,28 +547,41 @@ def run_video_conversion(args, input_path, out_dir, ctx):
 
         v_parts = "format=yuv420p"
         fc = []
-        if duration_factor != 1.0:
+        if is_cover_only:
+            # Image is input 1 (right after the song): native size,
+            # even-rounded for h264/vp9/av1, no setpts (still + shortest
+            # matches the sped audio length below).
+            fc.append(
+                f"[1:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,{v_parts}[vout]")
+        elif duration_factor != 1.0:
             fc.append(f"[0:v:0]setpts=PTS/{duration_factor:g},{v_parts}[vout]")
         else:
             fc.append(f"[0:v:0]{v_parts}[vout]")
         cmd = ["ffmpeg", "-nostdin",
                "-y" if args.overwrite else "-n",
                "-i", str(input_path)]
+        n_inputs = 1
+        if is_cover_only:
+            cmd += ["-loop", "1", "-framerate", "30",
+                    "-i", str(cover_source)]
+            n_inputs += 1
+        cli_idx = None
         if cli_tmp is not None:
             cmd += ["-i", str(cli_tmp)]
-        audio_input_idx = 0
+            cli_idx = n_inputs
+            n_inputs += 1
         processed_idx = None
         if processed_wav is not None:
-            audio_input_idx = len(cmd) // 2  # not used; compute below
-            processed_idx = 1 + (1 if cli_tmp is not None else 0)
             cmd += ["-i", str(processed_wav)]
-            # Shifts cover index below.
+            processed_idx = n_inputs
+            n_inputs += 1
         cover_flag = ctx.get("cover_flag")
         cover_idx = None
-        if cover_flag is not None and container_key != "webm":
-            cover_idx = 1 + (1 if cli_tmp is not None else 0) + (
-                1 if processed_wav is not None else 0)
+        if cover_flag is not None and container_key != "webm" \
+                and not is_cover_only:
             cmd += ["-i", str(cover_flag)]
+            cover_idx = n_inputs
+            n_inputs += 1
         audio_labels = []
         for i in range(n_audio):
             if cli_tmp is not None or processed_wav is not None:
@@ -548,7 +600,8 @@ def run_video_conversion(args, input_path, out_dir, ctx):
         for label in audio_labels:
             cmd += ["-map", f"[{label}]"]
         if cli_tmp is not None:
-            cmd += ["-map", "1:a:0"]
+            assert cli_idx is not None
+            cmd += ["-map", f"{cli_idx}:a:0"]
         elif processed_wav is not None:
             cmd += ["-map", f"{processed_idx}:a:0"]
         if cover_idx is not None:
@@ -596,11 +649,16 @@ def run_video_conversion(args, input_path, out_dir, ctx):
                         f"setts=ts=TS/{duration_factor:g}"
                         f":duration=DURATION/{duration_factor:g}"]
         # Cover: mp4/mkv carry it as an attached picture; webm ignores.
-        if cover_flag is not None and container_key == "webm":
+        # In cover-only mode the flag is the main video, never ignored.
+        if cover_flag is not None and container_key == "webm" \
+                and not is_cover_only:
             print("Warning: --cover ignored for webm output "
                   "(container cannot carry thumbnails)", file=sys.stderr)
         if cover_idx is not None:
             cmd += ["-c:v:1", "mjpeg", "-disposition:v:1", "attached_pic"]
+        if is_cover_only:
+            # The looped still is infinite; the sped audio ends it.
+            cmd += ["-shortest"]
         if ext == ".mp4":
             cmd += ["-movflags", "+faststart"]
         cmd += ["-map_metadata", "0"]

@@ -84,6 +84,7 @@ def parse_arguments():
              "for a video input: preset mp4 (h264+aac), mp4alac (h264+alac),\n"
              "mkv (h264+flac), webm (vp9+opus), or reversible pair "
              "h264/aac (video/audio either order guesses the container).\n"
+             "a song with cover art uses its cover (or --cover) as video.\n"
              "with --mkvid: mkv (default), mp4 or mp4alac (classic still-image video)"
     )
 
@@ -734,11 +735,26 @@ def main():
                 # Sidecar lyrics/subtitles retime alongside the video.
                 from .lrc import run_lrc
                 from .ass import run_ass
-                from .audio import has_real_video as _has_video
+                from .audio import (
+                    cover_codec_name as _cover_codec,
+                    has_real_video as _has_video,
+                )
+                from .constants import COVER_CODECS as _COVER_CODECS
+
+                def _has_visual(p):
+                    try:
+                        return bool(p.is_file() and (
+                            _has_video(p)
+                            or cover_flag is not None
+                            or _cover_codec(p) in _COVER_CODECS))
+                    except Exception:
+                        return False
+
                 _videos = [Path(p) for p in args.input
-                           if Path(p).is_file() and _has_video(Path(p))]
+                           if _has_visual(Path(p))]
                 if not _videos:
-                    print("Error: video format needs a video input",
+                    print("Error: video format needs a video input "
+                          "(audio-only songs need cover art or --cover)",
                           file=sys.stderr)
                     return 1
             _ctx = {

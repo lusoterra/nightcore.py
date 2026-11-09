@@ -30,6 +30,10 @@ of Nightcore. You can, of course, slow down music with it as well.
   source resolution is kept, re-encoded to h264/AV1/VP9 + your audio codec.
   `-F` takes a preset (`mp4` = h264+aac, `mp4alac` = h264+alac, `mkv` = h264+flac,
   `webm` = vp9+opus) or a reversible pair `h264/aac` (also `aac/h264`, `av1/flac` guesses mkv).
+  A song without a real video stream gets its cover looped as the video instead
+  (`nightcore song.flac -s 1.35 -F avc/aac`): the cover (`--cover` wins over embedded
+  art) is encoded at its native even-rounded size with the sped audio setting its
+  length; real video still wins when present, and a song with neither fails loudly.
   Embedded subtitles are retimed; a sidecar `.lrc` or `.ass` lands as `in [1.1x].<ext>`.
 - `--mkvid`: remux one song (+ optional `.lrc` lyrics, + image) into a
   1080p YouTube video. The image is letterboxed/pillarboxed into 1920x1080

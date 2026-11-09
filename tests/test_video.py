@@ -300,3 +300,108 @@ def test_mkvid_still_rejects_speed(monkeypatch, tmp_path):
         check=True)
     rc = _run(monkeypatch, ["-F", "mkv", "--mkvid", str(src), "-s", "1.1"])
     assert rc == 1
+
+
+def _cover_song(path, duration=2, size="600x600", color="red"):
+    """FLAC song with embedded mjpeg cover (metaflac import)."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+         f"sine=frequency=440:duration={duration}",
+         "-c:a", "flac", "-metadata", "title=Cover Song",
+         str(path)],
+        check=True)
+    img = path.with_suffix(".jpg")
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+         f"color=c={color}:s={size}:d=1", "-frames:v", "1", str(img)],
+        check=True)
+    spec = f"3|image/jpeg|||{img}"
+    subprocess.run(
+        ["metaflac", f"--import-picture-from={spec}", str(path)],
+        check=True)
+
+
+def _plain_song(path, duration=2):
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+         f"sine=frequency=330:duration={duration}",
+         "-c:a", "flac", str(path)],
+        check=True)
+
+
+def test_video_cover_only_embedded(monkeypatch, tmp_path):
+    """A song with cover art gets its cover encoded as the video."""
+    _require("ffmpeg", "ffprobe", "metaflac")
+    src = tmp_path / "song.flac"
+    _cover_song(src)
+    out = tmp_path / "out.mp4"
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.5", "-F", "avc/aac",
+               "--lossy-opts=-b:a 128k", "-y", "-o", str(out)])
+    assert rc == 0
+    data = _probe(out)
+    assert float(data["format"]["duration"]) == pytest.approx(2 / 1.5, abs=0.2)
+    kinds = {(s["codec_type"], s["codec_name"]) for s in data["streams"]}
+    assert ("video", "h264") in kinds
+    assert ("audio", "aac") in kinds
+    vid = next(s for s in data["streams"] if s["codec_type"] == "video")
+    assert (vid["width"], vid["height"]) == (600, 600)
+
+
+def test_video_cover_only_flag(monkeypatch, tmp_path):
+    """--cover supplies the video when the song has no art."""
+    _require("ffmpeg", "ffprobe")
+    src = tmp_path / "song.flac"
+    _plain_song(src)
+    img = tmp_path / "cover.jpg"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+         "color=c=blue:s=640x360:d=1", "-frames:v", "1", str(img)],
+        check=True)
+    out = tmp_path / "out.mp4"
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.2", "-F", "avc/aac",
+               "--lossy-opts=-b:a 128k", "--cover", str(img),
+               "-y", "-o", str(out)])
+    assert rc == 0
+    data = _probe(out)
+    vid = next(s for s in data["streams"] if s["codec_type"] == "video")
+    assert vid["codec_name"] == "h264"
+    assert (vid["width"], vid["height"]) == (640, 360)
+
+
+def test_video_cover_only_no_cover_errors(monkeypatch, tmp_path, capsys):
+    """No real video and no cover art fails loudly."""
+    _require("ffmpeg", "ffprobe")
+    src = tmp_path / "song.flac"
+    _plain_song(src)
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.2", "-F", "avc/aac",
+               "--lossy-opts=-b:a 128k", "-y",
+               "-o", str(tmp_path / "out.mp4")])
+    assert rc == 1
+    assert "no cover art" in capsys.readouterr().err
+
+
+def test_video_real_prefers_over_cover(monkeypatch, tmp_path):
+    """Real video wins; --cover stays an attached picture."""
+    _require("ffmpeg", "ffprobe")
+    src = tmp_path / "in.mp4"
+    _video(src)
+    img = tmp_path / "cover.jpg"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+         "color=c=green:s=600x600:d=1", "-frames:v", "1", str(img)],
+        check=True)
+    out = tmp_path / "out.mp4"
+    rc = _run(monkeypatch,
+              [str(src), "-s", "1.1", "-F", "mp4",
+               "--lossy-opts=-b:a 128k", "--cover", str(img),
+               "-y", "-o", str(out)])
+    assert rc == 0
+    data = _probe(out)
+    vids = [s for s in data["streams"] if s["codec_type"] == "video"]
+    assert vids[0]["width"] == 320  # real video, not the 600px cover
+    assert vids[0]["codec_name"] == "h264"
+    assert any(v["codec_name"] == "mjpeg" for v in vids[1:])
+
