@@ -30,9 +30,7 @@ def parse_arguments():
         type=str,
         nargs="*",
         default=[],
-        help="Input audio file(s) (not needed for --pitch-diff/--speed-diff;\n"
-             ".lrc lyrics allowed with -s: retimed copy; several files\n"
-             "share the same settings)"
+        help="Input audio file(s)\n"
     )
 
     parser.add_argument(
@@ -82,7 +80,7 @@ def parse_arguments():
         metavar="FMT",
         help="Output format: flac (default), alac, mp3, opus, aac;\n"
              "for a video input: preset mp4 (h264+aac), mp4alac (h264+alac),\n"
-             "mkv (h264+flac), webm (vp9+opus), or reversible pair "
+             "mkv (h264+flac), webm (vp9+opus), or reversible pair\n"
              "h264/aac (video/audio either order guesses the container).\n"
              "a song with cover art uses its cover (or --cover) as video.\n"
              "with --mkvid: mkv (default), mp4 or mp4alac (classic still-image video)"
