@@ -29,7 +29,7 @@ ROOT="$PWD"
 STAGE="tools"
 CACHE="cache"
 PORTABLE="build/portable"
-UPSTREAM_REPO="https://git.lusosterone.net/lev/nightcore.py"
+UPSTREAM_REPO="https://github.com/lusoterra/nightcore.py"
 
 # all bumpable/pinnable versions live in versions.env (env still wins).
 . "$ROOT/versions.env"
