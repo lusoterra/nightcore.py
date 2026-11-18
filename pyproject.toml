@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nightcore"
-version = "2026.10.21-1"
+version = "2026.11.18-1"
 description = "Bit-perfect nightcore/speed/pitch audio tool (ffmpeg, sox, rubberband)"
 readme = "README.md"
 license = "MIT"
@@ -14,7 +14,7 @@ authors = [{ name = "Lev", email = "lev@lusosterone.net" }]
 dependencies = ["mutagen"]
 
 [project.urls]
-Repository = "https://git.lusosterone.net/lev/nightcore"
+Repository = "https://github.com/lusoterra/nightcore.py"
 
 [project.scripts]
 nightcore = "nightcore.cli:main"
